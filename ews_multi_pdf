@@ -466,7 +466,7 @@ Continue this format for all categories, ensuring every red flag from the previo
         
         # ITERATION 4: Detailed summary generation
         print("Running 4th iteration - Summary Generation...")
-        fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags. Follow these guidelines:
+        fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags in bullet point format. Follow these guidelines:
 
     1. **Retain all information**: Ensure that no details are omitted or lost during the summarization process
     2. **Maintain a neutral tone**: Present the summary in a factual and objective manner, avoiding any emotional or biased language
@@ -476,30 +476,40 @@ Continue this format for all categories, ensuring every red flag from the previo
     6. **Incorporate quantitative data**: Wherever possible, include quantitative data and statistics to support the summary and provide additional context
     7. **Category-specific content**: Ensure that the summary is generated based solely on the content present within each category
     8. **Summary should be factual**: Avoid any subjective interpretations or opinions
+    9. **Use bullet points**: Each red flag should be summarized as a separate bullet point with key details and data points
 
     Format the output exactly like this example:
     ### Balance Sheet Issues
-    [Detailed paragraph summary of all balance sheet related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+    • [Summary of red flag 3 with specific data points and factual information]
 
     ### P&L (Income Statement) Issues  
-    [Detailed paragraph summary of all P&L related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+    • [Summary of red flag 3 with specific data points and factual information]
 
     ### Liquidity Issues
-    [Detailed paragraph summary of all liquidity related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
 
     ### Management and Strategy related Issues
-    [Detailed paragraph summary of all management and strategy related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
 
     ### Regulatory Issues
-    [Detailed paragraph summary of all regulatory related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
 
     ### Industry and Market Issues
-    [Detailed paragraph summary of all industry and market related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
 
     ### Operational Issues
-    [Detailed paragraph summary of all operational related red flags with specific data points and factual information]
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
 
-    Continue this format for all 7 categories. Each summary should be a comprehensive paragraph that captures all the relevant red flags and their details within that category."""
+    Continue this format for all 7 categories. Each bullet point should be a concise summary that captures the key details of each red flag within that category, including relevant quantitative data where available."""
         
         fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
 
