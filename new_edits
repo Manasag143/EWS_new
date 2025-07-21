@@ -1,0 +1,90 @@
+	High 	Medium	Low
+a) Balance sheet issues:			
+1.Increase in debt or leverage	Debt increase by >=40% compared to previous reported b/s number	Debt increase between 25 to 40% compared to previous reported b/s number	Debt increase is less than 25% compared to previous reported b/s number 
+2. One-time provisioning or write-offs 	provisioning or write-offs more than 25% of current quarter's EBIDTA	provisioning or write-offs between 10 to 25% of current quarter's EBIDTA	provisioning or write-offs less than 10% of current quarter's EBIDTA
+3. Decline in asset values (e.g., inventory, property, equipment) 	Asset value falls by >=40% compared to previous reported b/s number	Asset value falls between 25% to 40% compared to previous reported b/s number	Asset value falls by less than 25% compared to previous reported b/s number
+4. Accounts receivable days 	receivable days increase by >=40% compared to previous reported b/s number	receivable days  increase between 25 to 40% compared to previous reported b/s number	receivable days  increase is less than 25% compared to previous reported b/s number 
+5. Accounts payable days 	payable days increase by >=40% compared to previous reported b/s number	payable days  increase between 25 to 40% compared to previous reported b/s number	payable days  increase is less than 25% compared to previous reported b/s number 
+6. Debt/EBIDTA	Debt/EBITDA > 4x	Debt/EBITDA 2-4x	Debt/EBITDA < 2x
+b) P&L issues:			
+1. Decline in revenue or profitability 	revenue or profitability falls by >=40% compared to previous reported quarter number	revenue or profitability falls between 25% to 40% compared to previous reported quarter number	revenue or profitability falls by less than 25% compared to previous reported quarter number
+2. one-time expenses or losses 	one-time expenses or losses more than 25% of current quarter's EBIDTA	one-time expenses or losses  between 10 to 25% of current quarter's EBIDTA	one-time expenses or losses  less than 10% of current quarter's EBIDTA
+3. decline in gross margin or operating margin 	gross margin or operating margin falling more than 25% compared to previous reported quarter number	gross margin or operating margin falling  between 10 to 25% compared to previous reported quarter number	gross margin or operating margin falling  less than 10% compared to previous reported quarter number
+c) Liquidity issues:			
+1. Low cash balance	cash balance falling more than 25% compared to previous reported b/s number	cash balance falling  between 10 to 25% compared to previous reported b/s number	cash balance falling  less than 10% compared to previous reported b/s number
+2. Short-term debt or current liabilities 	Short-term debt or current liabilities  increase by >=40% compared to previous reported b/s number	 Short-term debt or current liabilities   increase between 25 to 40% compared to previous reported b/s number	 Short-term debt or current liabilities  increase is less than 25% compared to previous reported b/s number 
+d) Management and Strategy Related Issues:	">High management turnover or key personnel departures
+ 
+>Poor track record of execution or delivery
+ 
+> High employee attrition rates "	">Some management turnover or key personnel departures
+ 
+>Some concerns around execution or delivery 
+ 
+> Moderate employee attrition rates "	">Low management turnover or key personnel departures
+ 
+>Strong track record of execution or delivery 
+ 
+> Low employee attrition rates "
+e) Regulatory Issues :	">Material non-compliance with regulations or laws 
+ 
+>Repeated regulatory issues or warnings 
+  "	">Some non-compliance with regulations or laws 
+ 
+>Some regulatory issues or warnings 
+"	">No material  non-compliance with regulations or laws 
+ 
+>No regulatory issues or warnings 
+"
+f) Industry and Market Issues :	">High competitive intensity or new entrants 
+ 
+>Material decline in market share 
+  "	">Some competitive intensity or new entrants 
+ 
+>Some decline in market share 
+  "	">Low competitive intensity or new entrants 
+ 
+>Stable or increasing  market share 
+  "
+g) Operational Issues:	">Material disruptions to operations or supply chain 
+ 
+>Significant IT or system failures 
+  "	">Some disruptions to operations or supply chain 
+ 
+>Some IT or system failures 
+  "	">No Material disruptions to operations or supply chain 
+ 
+>No significant IT or system failures 
+  "
+
+
+
+
+
+
+
+
+
+
+loop parameter into balancesheetlist:
+ 
+	prompt = """
+ 
+	
+	{parameter}
+	{entire summary}
+ 
+	Output Format:-Criteria for Identification:-
+	High: description yes/no 
+	Medium: description yes/no
+	Low: description yes/no
+	Not_Applicable: yes/no
+ 
+	
+ 
+	"""
+ 
+	High: yes
+	Medium: no
+	Low: no
+	Not_Applicable: no
