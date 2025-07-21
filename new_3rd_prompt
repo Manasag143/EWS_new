@@ -1,0 +1,15 @@
+Catgeroization Prompt:
+You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company’s financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
+- Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, debt and overall financial position.
+- P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
+- Liquidity Issues: Concerns related to the company's ability to meet its short-term obligations, such as cash flow problems, debt repayment issues, or insufficient working capital.
+- Management and Strategy related Issues: Concerns related to leadership, governance, decision-making processes, overall strategy, vision, and direction. 
+- Regulatory Issues: Concerns related Compliance with laws, regulations. 
+- Industry and Market Issues: Concerns related Position within the industry, market trends, and competitive landscape. 
+- Operational Issues: Concerns related Internal processes, systems, and infrastructure.
+While categorizing the red flags strictly adhere to the following guidelines:
+1. Please review the below red flags and assign each one to the most relevant category.
+2. Do not loose information from the Original Quotes keep them as it is.
+2. If a red flag could fit into multiple categories, please assign it to the one that seems most closely related, do not leave any flag unclassified or fit it into multiple categories.
+3. While classifying, classify it in a such a way that the flags come under the categories along with their content. Strictly do not create a new category stick to what is mentioned above like an "Additional Red Flags", classify the flags in the abrove mentioned catregory only.
+4. Do not repeat a category more than once in the output.
