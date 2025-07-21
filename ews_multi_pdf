@@ -401,37 +401,55 @@ def process_single_pdf_four_iterations(pdf_path: str, queries_csv_path: str, out
         
         second_response = pipeline_1st.llm._call(second_full_prompt)
         
-        # ITERATION 3: Categorization of red flags
+        # ITERATION 3: Categorization of red flags - UPDATED PROMPT
         print("Running 3rd iteration - Categorization...")
-        third_prompt = """Based on the deduplicated red flags identified in the previous analysis, I need help categorizing these red flags into the following 8 categories:
+        third_prompt = """You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
 
-    1. Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, and overall financial position.
-    2. P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
-    3. Management Issues: Red flags related to the company's leadership, governance, and decision-making processes.
-    4. Regulatory Issues: Red flags related to the company's compliance with laws, regulations, and industry standards.
-    5. Industry and Market Issues: Red flags related to the company's position within its industry, market trends, and competitive landscape.
-    6. Operational Issues: Red flags related to the company's internal processes, systems, and infrastructure.
-    7. Financial Reporting and Transparency Issues: Red flags related to the company's financial reporting, disclosure, and transparency practices.
-    8. Strategic Issues: Red flags related to the company's overall strategy, vision, and direction.
+- Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, debt and overall financial position.
+- P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
+- Liquidity Issues: Concerns related to the company's ability to meet its short-term obligations, such as cash flow problems, debt repayment issues, or insufficient working capital.
+- Management and Strategy related Issues: Concerns related to leadership, governance, decision-making processes, overall strategy, vision, and direction. 
+- Regulatory Issues: Concerns related Compliance with laws, regulations. 
+- Industry and Market Issues: Concerns related Position within the industry, market trends, and competitive landscape. 
+- Operational Issues: Concerns related Internal processes, systems, and infrastructure.
 
-    **Task**: Take each red flag from the deduplicated list in the previous analysis and assign it to the most appropriate category above.
+While categorizing the red flags strictly adhere to the following guidelines:
+1. Please review the below red flags and assign each one to the most relevant category.
+2. Do not loose information from the Original Quotes keep them as it is.
+3. If a red flag could fit into multiple categories, please assign it to the one that seems most closely related, do not leave any flag unclassified or fit it into multiple categories.
+4. While classifying, classify it in a such a way that the flags come under the categories along with their content. Strictly do not create a new category stick to what is mentioned above like an "Additional Red Flags", classify the flags in the above mentioned category only.
+5. Do not repeat a category more than once in the output.
 
-    **Rules for categorization**:
-    - If a red flag could fit into multiple categories, assign it to the one that seems most closely related
-    - Do not leave any flag unclassified
-    - Do not assign any flag to multiple categories
-    - Ensure clear classification that groups similar issues together
+**Output Format**:
+### Balance Sheet Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
 
-    **Output Format**:
-    ### 1. Balance Sheet Issues
-    - [Red flag 1 from previous analysis]
-    - [Red flag 2 from previous analysis]
+### P&L (Income Statement) Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
 
-    ### 2. P&L (Income Statement) Issues
-    - [Red flag 1 from previous analysis]
-    - [Red flag 2 from previous analysis]
+### Liquidity Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
 
-    Continue this format for all 8 categories, ensuring every red flag from the previous analysis is categorized."""
+### Management and Strategy related Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Regulatory Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Industry and Market Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Operational Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+Continue this format for all categories, ensuring every red flag from the previous analysis is categorized properly."""
         
         third_full_prompt = f"""You must answer the question strictly based on the below given context.
 
@@ -460,13 +478,28 @@ def process_single_pdf_four_iterations(pdf_path: str, queries_csv_path: str, out
     8. **Summary should be factual**: Avoid any subjective interpretations or opinions
 
     Format the output exactly like this example:
-    ### 1. Balance Sheet Issues
+    ### Balance Sheet Issues
     [Detailed paragraph summary of all balance sheet related red flags with specific data points and factual information]
 
-    ### 2. P&L (Income Statement) Issues  
+    ### P&L (Income Statement) Issues  
     [Detailed paragraph summary of all P&L related red flags with specific data points and factual information]
 
-    Continue this format for all 8 categories. Each summary should be a comprehensive paragraph that captures all the relevant red flags and their details within that category."""
+    ### Liquidity Issues
+    [Detailed paragraph summary of all liquidity related red flags with specific data points and factual information]
+
+    ### Management and Strategy related Issues
+    [Detailed paragraph summary of all management and strategy related red flags with specific data points and factual information]
+
+    ### Regulatory Issues
+    [Detailed paragraph summary of all regulatory related red flags with specific data points and factual information]
+
+    ### Industry and Market Issues
+    [Detailed paragraph summary of all industry and market related red flags with specific data points and factual information]
+
+    ### Operational Issues
+    [Detailed paragraph summary of all operational related red flags with specific data points and factual information]
+
+    Continue this format for all 7 categories. Each summary should be a comprehensive paragraph that captures all the relevant red flags and their details within that category."""
         
         fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
 
