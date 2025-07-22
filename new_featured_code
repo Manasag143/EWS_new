@@ -398,6 +398,10 @@ def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[s
         'Low': []
     }
     
+    print("DEBUG: Parsing risk classifications...")
+    print(f"DEBUG: Response length: {len(combined_fifth_response)}")
+    print(f"DEBUG: First 500 chars: {combined_fifth_response[:500]}")
+    
     # Split by categories
     categories = combined_fifth_response.split('###')
     
@@ -410,17 +414,28 @@ def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[s
         
         for line in lines:
             line = line.strip()
-            if line.startswith('•') or line.startswith('-'):
+            
+            # Check for bullet points (multiple formats)
+            if line.startswith('•') or line.startswith('-') or line.startswith('*'):
                 current_flag = line[1:].strip()  # Remove bullet point
-            elif '- High: yes' in line and current_flag:
+                print(f"DEBUG: Found flag: {current_flag}")
+            
+            # Check for risk classifications (multiple formats)
+            elif any(pattern in line.lower() for pattern in ['- high: yes', 'high: yes', '- high:yes', 'high:yes']) and current_flag:
                 risk_flags['High'].append(current_flag)
+                print(f"DEBUG: Added HIGH risk: {current_flag}")
                 current_flag = ""
-            elif '- Medium: yes' in line and current_flag:
+            elif any(pattern in line.lower() for pattern in ['- medium: yes', 'medium: yes', '- medium:yes', 'medium:yes']) and current_flag:
                 risk_flags['Medium'].append(current_flag)
+                print(f"DEBUG: Added MEDIUM risk: {current_flag}")
                 current_flag = ""
-            elif '- Low: yes' in line and current_flag:
+            elif any(pattern in line.lower() for pattern in ['- low: yes', 'low: yes', '- low:yes', 'low:yes']) and current_flag:
                 risk_flags['Low'].append(current_flag)
+                print(f"DEBUG: Added LOW risk: {current_flag}")
                 current_flag = ""
+    
+    print(f"DEBUG: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    print(f"DEBUG: High risk flags: {risk_flags['High']}")
     
     return risk_flags
 
@@ -812,7 +827,45 @@ Answer:"""
         for result in fifth_results:
             combined_fifth_response += f"\n{result['risk_classification']}\n"
         
-        # Extract company information from first page
+def parse_risk_classifications_robust(combined_fifth_response: str) -> Dict[str, List[str]]:
+    """Alternative robust parsing method for risk classifications"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    # Use regex to find patterns more reliably
+    import re
+    
+    # Split into sections by category headers
+    sections = re.split(r'###\s*.*?Risk Classification', combined_fifth_response, flags=re.IGNORECASE)
+    
+    for section in sections:
+        if not section.strip():
+            continue
+            
+        # Find all bullet points with their subsequent risk assessments
+        bullet_pattern = r'[•\-\*]\s*(.+?)(?=\n\s*[\-\•\*]|\n\s*###|$)'
+        bullets = re.findall(bullet_pattern, section, re.DOTALL)
+        
+        for bullet_text in bullets:
+            # Clean up the bullet text
+            flag_description = bullet_text.split('\n')[0].strip()
+            
+            # Check for risk levels in the bullet content
+            if re.search(r'high\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['High'].append(flag_description)
+                print(f"DEBUG ROBUST: Added HIGH risk: {flag_description}")
+            elif re.search(r'medium\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['Medium'].append(flag_description)
+                print(f"DEBUG ROBUST: Added MEDIUM risk: {flag_description}")
+            elif re.search(r'low\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['Low'].append(flag_description)
+                print(f"DEBUG ROBUST: Added LOW risk: {flag_description}")
+    
+    print(f"DEBUG ROBUST: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    return risk_flags
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
