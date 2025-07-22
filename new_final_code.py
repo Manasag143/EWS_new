@@ -414,32 +414,37 @@ def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[s
         for line in lines:
             line = line.strip()
             
-            # Check for bullet points (handle * format)
-            if line.startswith('*') and not line.startswith('* ['):
+            # Check for bullet points (handle * format) - more flexible matching
+            if line.startswith('*') and not 'Risk Classification' in line:
                 current_flag = line[1:].strip()  # Remove bullet point
                 print(f"DEBUG: Found flag: {current_flag}")
+                continue
             
             # Check for risk classifications - exact pattern matching
-            elif current_flag and line.startswith('  - '):
+            if current_flag and line.startswith('  - '):
                 line_clean = line.replace('  - ', '').strip().lower()
                 
                 # Look for exact "high: yes" pattern
                 if line_clean == 'high: yes':
                     risk_flags['High'].append(current_flag)
                     print(f"DEBUG: Added HIGH risk: {current_flag}")
-                    current_flag = ""  # Reset after classification
+                    # Don't reset current_flag here, continue checking other risk levels
                 
                 # Look for exact "medium: yes" pattern  
                 elif line_clean == 'medium: yes':
                     risk_flags['Medium'].append(current_flag)
                     print(f"DEBUG: Added MEDIUM risk: {current_flag}")
-                    current_flag = ""  # Reset after classification
+                    # Don't reset current_flag here, continue checking other risk levels
                 
                 # Look for exact "low: yes" pattern
                 elif line_clean == 'low: yes':
                     risk_flags['Low'].append(current_flag)
                     print(f"DEBUG: Added LOW risk: {current_flag}")
-                    current_flag = ""  # Reset after classification
+                    # Don't reset current_flag here, continue checking other risk levels
+            
+            # Reset current_flag when we encounter next bullet or category
+            elif line.startswith('*') or line.startswith('###'):
+                current_flag = ""
     
     print(f"DEBUG: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
     print(f"DEBUG: High risk flags: {risk_flags['High']}")
