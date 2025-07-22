@@ -398,6 +398,10 @@ def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[s
         'Low': []
     }
     
+    print("DEBUG: Parsing risk classifications...")
+    print(f"DEBUG: Response length: {len(combined_fifth_response)}")
+    print(f"DEBUG: First 500 chars: {combined_fifth_response[:500]}")
+    
     # Split by categories
     categories = combined_fifth_response.split('###')
     
@@ -410,18 +414,29 @@ def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[s
         
         for line in lines:
             line = line.strip()
-            if line.startswith('•') or line.startswith('-'):
+            
+            # Check for bullet points (multiple formats)
+            if line.startswith('•') or line.startswith('-') or line.startswith('*'):
                 current_flag = line[1:].strip()  # Remove bullet point
-            elif '- High: yes' in line and current_flag:
+                print(f"DEBUG: Found flag: {current_flag}")
+            
+            # Check for risk classifications (multiple formats)
+            elif any(pattern in line.lower() for pattern in ['- high: yes', 'high: yes', '- high:yes', 'high:yes']) and current_flag:
                 risk_flags['High'].append(current_flag)
+                print(f"DEBUG: Added HIGH risk: {current_flag}")
                 current_flag = ""
-            elif '- Medium: yes' in line and current_flag:
+            elif any(pattern in line.lower() for pattern in ['- medium: yes', 'medium: yes', '- medium:yes', 'medium:yes']) and current_flag:
                 risk_flags['Medium'].append(current_flag)
+                print(f"DEBUG: Added MEDIUM risk: {current_flag}")
                 current_flag = ""
-            elif '- Low: yes' in line and current_flag:
+            elif any(pattern in line.lower() for pattern in ['- low: yes', 'low: yes', '- low:yes', 'low:yes']) and current_flag:
                 risk_flags['Low'].append(current_flag)
+                print(f"DEBUG: Added LOW risk: {current_flag}")
                 current_flag = ""
-    print(risk_flags)
+    
+    print(f"DEBUG: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    print(f"DEBUG: High risk flags: {risk_flags['High']}")
+    
     return risk_flags
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
@@ -441,10 +456,10 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
         
         for line in lines:
             line = line.strip()
-            if line and not line.startswith('•') and not line.startswith('-'):
+            if line and not line.startswith('*') and not line.startswith('-'):
                 # This is likely the category name
                 category_name = line.strip()
-            elif line.startswith('•') or line.startswith('-'):
+            elif line.startswith('*') or line.startswith('-'):
                 # This is a bullet point
                 bullet_text = line[1:].strip()  # Remove bullet symbol
                 if bullet_text:
@@ -661,34 +676,34 @@ Continue this format for all categories, ensuring every red flag from the previo
 
     Format the output exactly like this example:
     ### Balance Sheet Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
-    • [Summary of red flag 3 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 3 with specific data points and factual information]
 
     ### P&L (Income Statement) Issues  
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
-    • [Summary of red flag 3 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 3 with specific data points and factual information]
 
     ### Liquidity Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
 
     ### Management and Strategy related Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
 
     ### Regulatory Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
 
     ### Industry and Market Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
 
     ### Operational Issues
-    • [Summary of red flag 1 with specific data points and factual information]
-    • [Summary of red flag 2 with specific data points and factual information]
+    * [Summary of red flag 1 with specific data points and factual information]
+    * [Summary of red flag 2 with specific data points and factual information]
 
     Continue this format for all 7 categories. Each bullet point should be a concise summary that captures the key details of each red flag within that category, including relevant quantitative data where available."""
         
@@ -775,13 +790,15 @@ Output Format:
 ### {category} Risk Classification
 
 For each red flag found in {category}:
-• [Red flag summary]
-  - High: yes/no (with explanation if yes)
-  - Medium: yes/no (with explanation if yes) 
-  - Low: yes/no (with explanation if yes)
+* [Red flag summary]
+  - High: yes/no
+  - Medium: yes/no 
+  - Low: yes/no
   - Not_Applicable: yes/no
 
 If no red flags exist in this category, state: "No red flags present in this category."
+
+IMPORTANT: Provide ONLY yes/no answers without any explanations or additional text after yes/no.
 
 Analysis should be based on:
 1. Quantitative thresholds mentioned in the criteria
@@ -812,7 +829,177 @@ Answer:"""
         for result in fifth_results:
             combined_fifth_response += f"\n{result['risk_classification']}\n"
         
-        # Extract company information from first page
+def parse_risk_classifications_manual(combined_fifth_response: str) -> Dict[str, List[str]]:
+    """Manual keyword-based parsing as last resort"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    print("DEBUG MANUAL: Starting manual parsing...")
+    
+    # Split by lines and look for patterns
+    lines = combined_fifth_response.split('\n')
+    current_flag = ""
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        
+        # Look for bullet points with various symbols
+        if any(line.startswith(symbol) for symbol in ['•', '-', '*', '►', '>', '○']):
+            current_flag = line[1:].strip()
+            print(f"DEBUG MANUAL: Found potential flag: {current_flag}")
+            
+            # Look ahead in next few lines for risk assessment
+            for j in range(i+1, min(i+10, len(lines))):
+                next_line = lines[j].strip().lower()
+                
+                if 'high' in next_line and 'yes' in next_line:
+                    risk_flags['High'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added HIGH risk: {current_flag}")
+                    break
+                elif 'medium' in next_line and 'yes' in next_line:
+                    risk_flags['Medium'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added MEDIUM risk: {current_flag}")
+                    break
+                elif 'low' in next_line and 'yes' in next_line:
+                    risk_flags['Low'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added LOW risk: {current_flag}")
+                    break
+    
+    print(f"DEBUG MANUAL: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    return risk_flags
+
+def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str, List[str]], 
+                        summary_by_categories: Dict[str, List[str]], output_folder: str) -> str:
+    """Create a formatted Word document with the analysis results"""
+    
+    # Create new document
+    doc = Document()
+    
+    # Set document title
+    title = doc.add_heading(company_info, 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add Flag Distribution section
+    flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+    flag_dist_heading.runs[0].bold = True
+    
+    # Create table for flag distribution
+    table = doc.add_table(rows=4, cols=2)
+    table.style = 'Table Grid'
+    
+    # Add table headers and data
+    high_count = len(risk_flags['High'])
+    medium_count = len(risk_flags['Medium'])
+    low_count = len(risk_flags['Low'])
+    total_count = high_count + medium_count + low_count
+    
+    table.cell(0, 0).text = 'High Risk'
+    table.cell(0, 1).text = str(high_count)
+    table.cell(1, 0).text = 'Medium Risk'
+    table.cell(1, 1).text = str(medium_count)
+    table.cell(2, 0).text = 'Low Risk'
+    table.cell(2, 1).text = str(low_count)
+    table.cell(3, 0).text = 'Total Flags'
+    table.cell(3, 1).text = str(total_count)
+    
+    # Make table headers bold
+    for i in range(4):
+        table.cell(i, 0).paragraphs[0].runs[0].bold = True
+    
+    # Add space
+    doc.add_paragraph('')
+    
+    # Debug: Print what we're about to add to the document
+    print(f"DEBUG WORD: About to add {high_count} high risk flags to document")
+    print(f"DEBUG WORD: High risk flags: {risk_flags['High']}")
+    
+    # Add High Risk Flags section only
+    if risk_flags['High']:
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        
+        for flag in risk_flags['High']:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(flag)
+            print(f"DEBUG WORD: Added flag to document: {flag}")
+    else:
+        # If no high risk flags, add a note
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        no_flags_para = doc.add_paragraph('No high risk flags identified.')
+        print("DEBUG WORD: No high risk flags found - added 'No high risk flags identified' message")
+    
+    # Add horizontal line
+    doc.add_paragraph('_' * 50)
+    
+    # Add Summary section
+    summary_heading = doc.add_heading('Summary', level=1)
+    summary_heading.runs[0].bold = True
+    
+    # Add categorized summary
+    for category, bullets in summary_by_categories.items():
+        if bullets:  # Only add if there are bullets
+            # Add category as subheading
+            cat_heading = doc.add_heading(category, level=2)
+            cat_heading.runs[0].bold = True
+            
+            # Add bullet points for this category
+            for bullet in bullets:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(bullet)
+            
+            # Add space between categories
+            doc.add_paragraph('')
+    
+    # Save document
+    doc_filename = f"{pdf_name}_Report.docx"
+    doc_path = os.path.join(output_folder, doc_filename)
+    doc.save(doc_path)
+    
+    return doc_path
+    """Alternative robust parsing method for risk classifications"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    # Use regex to find patterns more reliably
+    import re
+    
+    # Split into sections by category headers
+    sections = re.split(r'###\s*.*?Risk Classification', combined_fifth_response, flags=re.IGNORECASE)
+    
+    for section in sections:
+        if not section.strip():
+            continue
+            
+        # Find all bullet points with their subsequent risk assessments
+        bullet_pattern = r'[•\-\*]\s*(.+?)(?=\n\s*[\-\•\*]|\n\s*###|$)'
+        bullets = re.findall(bullet_pattern, section, re.DOTALL)
+        
+        for bullet_text in bullets:
+            # Clean up the bullet text
+            flag_description = bullet_text.split('\n')[0].strip()
+            
+            # Check for risk levels in the bullet content
+            if re.search(r'high\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['High'].append(flag_description)
+                print(f"DEBUG ROBUST: Added HIGH risk: {flag_description}")
+            elif re.search(r'medium\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['Medium'].append(flag_description)
+                print(f"DEBUG ROBUST: Added MEDIUM risk: {flag_description}")
+            elif re.search(r'low\s*:\s*yes', bullet_text, re.IGNORECASE):
+                risk_flags['Low'].append(flag_description)
+                print(f"DEBUG ROBUST: Added LOW risk: {flag_description}")
+    
+    print(f"DEBUG ROBUST: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    return risk_flags
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
@@ -959,7 +1146,7 @@ def main_batch_processing_five_iterations():
     
     pdf_folder_path = r"pdf_KEC"
     queries_csv_path = r"EWS_prompts_v2.xlsx"       
-    output_folder = r"KEC_with_word"
+    output_folder = r"KEC_result_5iterations_with_word"
     
     # Previous year data - you can modify this for each company
     previous_year_data = """
