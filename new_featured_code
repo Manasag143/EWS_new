@@ -827,7 +827,139 @@ Answer:"""
         for result in fifth_results:
             combined_fifth_response += f"\n{result['risk_classification']}\n"
         
-def parse_risk_classifications_robust(combined_fifth_response: str) -> Dict[str, List[str]]:
+def parse_risk_classifications_manual(combined_fifth_response: str) -> Dict[str, List[str]]:
+    """Manual keyword-based parsing as last resort"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    print("DEBUG MANUAL: Starting manual parsing...")
+    
+    # Split by lines and look for patterns
+    lines = combined_fifth_response.split('\n')
+    current_flag = ""
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        
+        # Look for bullet points with various symbols
+        if any(line.startswith(symbol) for symbol in ['•', '-', '*', '►', '>', '○']):
+            current_flag = line[1:].strip()
+            print(f"DEBUG MANUAL: Found potential flag: {current_flag}")
+            
+            # Look ahead in next few lines for risk assessment
+            for j in range(i+1, min(i+10, len(lines))):
+                next_line = lines[j].strip().lower()
+                
+                if 'high' in next_line and 'yes' in next_line:
+                    risk_flags['High'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added HIGH risk: {current_flag}")
+                    break
+                elif 'medium' in next_line and 'yes' in next_line:
+                    risk_flags['Medium'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added MEDIUM risk: {current_flag}")
+                    break
+                elif 'low' in next_line and 'yes' in next_line:
+                    risk_flags['Low'].append(current_flag)
+                    print(f"DEBUG MANUAL: Added LOW risk: {current_flag}")
+                    break
+    
+    print(f"DEBUG MANUAL: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    return risk_flags
+
+def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str, List[str]], 
+                        summary_by_categories: Dict[str, List[str]], output_folder: str) -> str:
+    """Create a formatted Word document with the analysis results"""
+    
+    # Create new document
+    doc = Document()
+    
+    # Set document title
+    title = doc.add_heading(company_info, 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add Flag Distribution section
+    flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+    flag_dist_heading.runs[0].bold = True
+    
+    # Create table for flag distribution
+    table = doc.add_table(rows=4, cols=2)
+    table.style = 'Table Grid'
+    
+    # Add table headers and data
+    high_count = len(risk_flags['High'])
+    medium_count = len(risk_flags['Medium'])
+    low_count = len(risk_flags['Low'])
+    total_count = high_count + medium_count + low_count
+    
+    table.cell(0, 0).text = 'High Risk'
+    table.cell(0, 1).text = str(high_count)
+    table.cell(1, 0).text = 'Medium Risk'
+    table.cell(1, 1).text = str(medium_count)
+    table.cell(2, 0).text = 'Low Risk'
+    table.cell(2, 1).text = str(low_count)
+    table.cell(3, 0).text = 'Total Flags'
+    table.cell(3, 1).text = str(total_count)
+    
+    # Make table headers bold
+    for i in range(4):
+        table.cell(i, 0).paragraphs[0].runs[0].bold = True
+    
+    # Add space
+    doc.add_paragraph('')
+    
+    # Debug: Print what we're about to add to the document
+    print(f"DEBUG WORD: About to add {high_count} high risk flags to document")
+    print(f"DEBUG WORD: High risk flags: {risk_flags['High']}")
+    
+    # Add High Risk Flags section only
+    if risk_flags['High']:
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        
+        for flag in risk_flags['High']:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(flag)
+            print(f"DEBUG WORD: Added flag to document: {flag}")
+    else:
+        # If no high risk flags, add a note
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        no_flags_para = doc.add_paragraph('No high risk flags identified.')
+        print("DEBUG WORD: No high risk flags found - added 'No high risk flags identified' message")
+    
+    # Add horizontal line
+    doc.add_paragraph('_' * 50)
+    
+    # Add Summary section
+    summary_heading = doc.add_heading('Summary', level=1)
+    summary_heading.runs[0].bold = True
+    
+    # Add categorized summary
+    for category, bullets in summary_by_categories.items():
+        if bullets:  # Only add if there are bullets
+            # Add category as subheading
+            cat_heading = doc.add_heading(category, level=2)
+            cat_heading.runs[0].bold = True
+            
+            # Add bullet points for this category
+            for bullet in bullets:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(bullet)
+            
+            # Add space between categories
+            doc.add_paragraph('')
+    
+    # Save document
+    doc_filename = f"{pdf_name}_Report.docx"
+    doc_path = os.path.join(output_folder, doc_filename)
+    doc.save(doc_path)
+    
+    return doc_path
     """Alternative robust parsing method for risk classifications"""
     risk_flags = {
         'High': [],
