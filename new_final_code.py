@@ -464,65 +464,6 @@ Only include the flag descriptions (the text after * and before the risk classif
     print(f"DEBUG HIGH FLAGS: {risk_data['High']}")
     
     return risk_data
-    """Parse the risk classification response to extract categorized flags"""
-    risk_flags = {
-        'High': [],
-        'Medium': [],
-        'Low': []
-    }
-    
-    print("DEBUG: Parsing risk classifications...")
-    print(f"DEBUG: Response length: {len(combined_fifth_response)}")
-    
-    # Split by categories
-    categories = combined_fifth_response.split('###')
-    
-    for category_text in categories:
-        if not category_text.strip():
-            continue
-            
-        lines = category_text.split('\n')
-        current_flag = ""
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Check for bullet points (handle * format) - more flexible matching
-            if line.startswith('*') and not 'Risk Classification' in line:
-                current_flag = line[1:].strip()  # Remove bullet point
-                print(f"DEBUG: Found flag: {current_flag}")
-                continue
-            
-            # Check for risk classifications - exact pattern matching
-            if current_flag and line.startswith('  - '):
-                line_clean = line.replace('  - ', '').strip().lower()
-                
-                # Look for exact "high: yes" pattern
-                if line_clean == 'high: yes':
-                    risk_flags['High'].append(current_flag)
-                    print(f"DEBUG: Added HIGH risk: {current_flag}")
-                    # Don't reset current_flag here, continue checking other risk levels
-                
-                # Look for exact "medium: yes" pattern  
-                elif line_clean == 'medium: yes':
-                    risk_flags['Medium'].append(current_flag)
-                    print(f"DEBUG: Added MEDIUM risk: {current_flag}")
-                    # Don't reset current_flag here, continue checking other risk levels
-                
-                # Look for exact "low: yes" pattern
-                elif line_clean == 'low: yes':
-                    risk_flags['Low'].append(current_flag)
-                    print(f"DEBUG: Added LOW risk: {current_flag}")
-                    # Don't reset current_flag here, continue checking other risk levels
-            
-            # Reset current_flag when we encounter next bullet or category
-            elif line.startswith('*') or line.startswith('###'):
-                current_flag = ""
-    
-    print(f"DEBUG: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
-    print(f"DEBUG: High risk flags: {risk_flags['High']}")
-    
-    return risk_flags
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -555,7 +496,7 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     
     return categories_summary
 
-def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str, List[str]], 
+def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, Any], 
                         summary_by_categories: Dict[str, List[str]], output_folder: str) -> str:
     """Create a formatted Word document with the analysis results"""
     
@@ -574,10 +515,10 @@ def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str,
     table = doc.add_table(rows=4, cols=2)
     table.style = 'Table Grid'
     
-    # Add table headers and data
-    high_count = len(risk_flags['High'])
-    medium_count = len(risk_flags['Medium'])
-    low_count = len(risk_flags['Low'])
+    # Add table headers and data using extracted counts
+    high_count = risk_data['counts']['High']
+    medium_count = risk_data['counts']['Medium']
+    low_count = risk_data['counts']['Low']
     total_count = high_count + medium_count + low_count
     
     table.cell(0, 0).text = 'High Risk'
@@ -598,14 +539,14 @@ def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str,
     
     # Debug: Print what we're about to add to the document
     print(f"DEBUG WORD: About to add {high_count} high risk flags to document")
-    print(f"DEBUG WORD: High risk flags: {risk_flags['High']}")
+    print(f"DEBUG WORD: High risk flags: {risk_data['High']}")
     
     # Add High Risk Flags section only
-    if risk_flags['High']:
+    if risk_data['High']:
         high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
         high_risk_heading.runs[0].bold = True
         
-        for flag in risk_flags['High']:
+        for flag in risk_data['High']:
             p = doc.add_paragraph()
             p.style = 'List Bullet'
             p.add_run(flag)
@@ -759,7 +700,6 @@ Continue this format for all categories, ensuring every red flag from the previo
 
     Answer:"""
         
-        third_response = pipeline_1st.llm._call(third_full_prompt)
         
         # ITERATION 4: Detailed summary generation
         print("Running 4th iteration - Summary Generation...")
@@ -767,6 +707,7 @@ Continue this format for all categories, ensuring every red flag from the previo
 
     1. **Retain all information**: Ensure that no details are omitted or lost during the summarization process
     2. **Maintain a neutral tone**: Present the summary in a factual and objective manner, avoiding any emotional or biased language
+    3. **Focus on factual content**: Base the summary solely on the information associated with each red flag, without introducing external opinions or assumptions
     4. **Include all red flags**: Incorporate every red flag within the category into the summary, without exception
     5. **Balance detail and concision**: Provide a summary that is both thorough and concise, avoiding unnecessary elaboration while still conveying all essential information
     6. **Incorporate quantitative data**: Wherever possible, include quantitative data and statistics to support the summary and provide additional context
@@ -934,9 +875,9 @@ Answer:"""
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
         
-        # Parse risk classifications
-        print("Parsing risk classifications...")
-        risk_flags = parse_risk_classifications(combined_fifth_response)
+        # Extract risk data using LLM
+        print("Extracting risk data using LLM...")
+        risk_data = extract_risk_data_using_llm(combined_fifth_response, pipeline_1st.llm)
         
         # Parse summary by categories
         print("Parsing summary by categories...")
@@ -947,7 +888,7 @@ Answer:"""
         word_doc_path = create_word_document(
             pdf_name=pdf_name,
             company_info=company_info,
-            risk_flags=risk_flags,
+            risk_data=risk_data,
             summary_by_categories=summary_by_categories,
             output_folder=output_folder
         )
