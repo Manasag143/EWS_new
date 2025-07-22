@@ -1,0 +1,635 @@
+def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+    """
+    Process a single PDF through the 5-iteration pipeline including risk classification
+    """
+    
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Get PDF name without extension
+    pdf_name = Path(pdf_path).stem
+    
+    print(f"\nProcessing: {pdf_name}")
+    print("=" * 50)
+    
+    try:
+        # ITERATION 1: Initial red flag identification
+        print("Running 1st iteration - Initial Analysis...")
+        pipeline_1st = LlamaQueryPipeline(
+            pdf_path=pdf_path,
+            queries_csv_path=queries_csv_path
+        )
+        
+        # Run 1st iteration
+        first_results_df = pipeline_1st.query_llama(maintain_conversation=True, enable_chaining=False)
+        
+        # Get first response for chaining
+        first_response = first_results_df.iloc[0]['response']
+        
+        # ITERATION 2: Deduplication and cleanup
+        print("Running 2nd iteration - Deduplication...")
+        second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. 
+        
+    Ensure that:
+    1. No duplicate red flags are present
+    2. Similar or redundant information is consolidated
+    3. All unique red flags are retained
+    4. The output maintains the structure and clarity of the original analysis"""
+        
+        second_full_prompt = f"""You must answer the question strictly based on the below given context.
+
+    Context:
+    {pipeline_1st.docs[0]["context"]}
+
+    Previous Analysis: {first_response}
+
+    Based on the above analysis and the original context, please answer: {second_prompt}
+
+    Answer:"""
+        
+        second_response = pipeline_1st.llm._call(second_full_prompt)
+        
+        # ITERATION 3: Categorization of red flags
+        print("Running 3rd iteration - Categorization...")
+        third_prompt = """You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
+
+- Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, debt and overall financial position.
+- P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
+- Liquidity Issues: Concerns related to the company's ability to meet its short-term obligations, such as cash flow problems, debt repayment issues, or insufficient working capital.
+- Management and Strategy related Issues: Concerns related to leadership, governance, decision-making processes, overall strategy, vision, and direction. 
+- Regulatory Issues: Concerns related Compliance with laws, regulations. 
+- Industry and Market Issues: Concerns related Position within the industry, market trends, and competitive landscape. 
+- Operational Issues: Concerns related Internal processes, systems, and infrastructure.
+
+While categorizing the red flags strictly adhere to the following guidelines:
+1. Please review the below red flags and assign each one to the most relevant category.
+2. Do not loose information from the Original Quotes keep them as it is.
+3. If a red flag could fit into multiple categories, please assign it to the one that seems most closely related, do not leave any flag unclassified or fit it into multiple categories.
+4. While classifying, classify it in a such a way that the flags come under the categories along with their content. Strictly do not create a new category stick to what is mentioned above like an "Additional Red Flags", classify the flags in the above mentioned category only.
+5. Do not repeat a category more than once in the output.
+
+**Output Format**:
+### Balance Sheet Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### P&L (Income Statement) Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Liquidity Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Management and Strategy related Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Regulatory Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Industry and Market Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+### Operational Issues
+- [Red flag 1 from previous analysis with original quote]
+- [Red flag 2 from previous analysis with original quote]
+
+Continue this format for all categories, ensuring every red flag from the previous analysis is categorized properly."""
+        
+        third_full_prompt = f"""You must answer the question strictly based on the below given context.
+
+    Context:
+    {pipeline_1st.docs[0]["context"]}
+
+    Previous Analysis: {second_response}
+
+    Based on the above analysis and the original context, please answer: {third_prompt}
+
+    Answer:"""
+        
+        third_response = pipeline_1st.llm._call(third_full_prompt)
+        
+        # ITERATION 4: Detailed summary generation
+        print("Running 4th iteration - Summary Generation...")
+        fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags in bullet point format. Follow these guidelines:
+
+    1. **Retain all information**: Ensure that no details are omitted or lost during the summarization process
+    2. **Maintain a neutral tone**: Present the summary in a factual and objective manner, avoiding any emotional or biased language
+    3. **Focus on factual content**: Base the summary solely on the information associated with each red flag, without introducing external opinions or assumptions
+    4. **Include all red flags**: Incorporate every red flag within the category into the summary, without exception
+    5. **Balance detail and concision**: Provide a summary that is both thorough and concise, avoiding unnecessary elaboration while still conveying all essential information
+    6. **Incorporate quantitative data**: Wherever possible, include quantitative data and statistics to support the summary and provide additional context
+    7. **Category-specific content**: Ensure that the summary is generated based solely on the content present within each category
+    8. **Summary should be factual**: Avoid any subjective interpretations or opinions
+    9. **Use bullet points**: Each red flag should be summarized as a separate bullet point with key details and data points
+
+    Format the output exactly like this example:
+    ### Balance Sheet Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+    • [Summary of red flag 3 with specific data points and factual information]
+
+    ### P&L (Income Statement) Issues  
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+    • [Summary of red flag 3 with specific data points and factual information]
+
+    ### Liquidity Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+
+    ### Management and Strategy related Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+
+    ### Regulatory Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+
+    ### Industry and Market Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+
+    ### Operational Issues
+    • [Summary of red flag 1 with specific data points and factual information]
+    • [Summary of red flag 2 with specific data points and factual information]
+
+    Continue this format for all 7 categories. Each bullet point should be a concise summary that captures the key details of each red flag within that category, including relevant quantitative data where available."""
+        
+        fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
+
+    Context:
+    {pipeline_1st.docs[0]["context"]}
+
+    Previous Analysis: {third_response}
+
+    Based on the above analysis and the original context, please answer: {fourth_prompt}
+
+    Answer:"""
+        
+        fourth_response = pipeline_1st.llm._call(fourth_full_prompt)
+        
+        # ITERATION 5: Risk Classification
+        print("Running 5th iteration - Risk Classification...")
+        
+        # Define risk criteria for each category
+        risk_criteria = {
+            "Balance Sheet Issues": {
+                "debt_increase": "High: Debt increase by >=40% compared to previous reported b/s number; Medium: Debt increase between 25 to 40% compared to previous reported b/s number; Low: Debt increase is less than 25% compared to previous reported b/s number",
+                "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Medium: provisioning or write-offs between 10 to 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 10% of current quarter's EBIDTA",
+                "asset_decline": "High: Asset value falls by >=40% compared to previous reported b/s number; Medium: Asset value falls between 25% to 40% compared to previous reported b/s number; Low: Asset value falls by less than 25% compared to previous reported b/s number",
+                "receivable_days": "High: receivable days increase by >=40% compared to previous reported b/s number; Medium: receivable days increase between 25 to 40% compared to previous reported b/s number; Low: receivable days increase is less than 25% compared to previous reported b/s number",
+                "payable_days": "High: payable days increase by >=40% compared to previous reported b/s number; Medium: payable days increase between 25 to 40% compared to previous reported b/s number; Low: payable days increase is less than 25% compared to previous reported b/s number",
+                "debt_ebitda": "High: Debt/EBITDA > 4x; Medium: Debt/EBITDA 2-4x; Low: Debt/EBITDA < 2x"
+            },
+            "P&L (Income Statement) Issues": {
+                "revenue_decline": "High: revenue or profitability falls by >=40% compared to previous reported quarter number; Medium: revenue or profitability falls between 25% to 40% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
+                "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Medium: one-time expenses or losses between 10 to 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 10% of current quarter's EBIDTA",
+                "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Medium: gross margin or operating margin falling between 10 to 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 10% compared to previous reported quarter number"
+            },
+            "Liquidity Issues": {
+                "cash_balance": "High: cash balance falling more than 25% compared to previous reported b/s number; Medium: cash balance falling between 10 to 25% compared to previous reported b/s number; Low: cash balance falling less than 10% compared to previous reported b/s number",
+                "short_term_debt": "High: Short-term debt or current liabilities increase by >=40% compared to previous reported b/s number; Medium: Short-term debt or current liabilities increase between 25 to 40% compared to previous reported b/s number; Low: Short-term debt or current liabilities increase is less than 25% compared to previous reported b/s number"
+            },
+            "Management and Strategy related Issues": {
+                "management_issues": "High: High management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates; Medium: Some management turnover or key personnel departures, Some concerns around execution or delivery, Moderate employee attrition rates; Low: Low management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates"
+            },
+            "Regulatory Issues": {
+                "regulatory_compliance": "High: Material non-compliance with regulations or laws, Repeated regulatory issues or warnings; Medium: Some non-compliance with regulations or laws, Some regulatory issues or warnings; Low: No material non-compliance with regulations or laws, No regulatory issues or warnings"
+            },
+            "Industry and Market Issues": {
+                "market_competition": "High: High competitive intensity or new entrants, Material decline in market share; Medium: Some competitive intensity or new entrants, Some decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share"
+            },
+            "Operational Issues": {
+                "operational_disruptions": "High: Material disruptions to operations or supply chain, Significant IT or system failures; Medium: Some disruptions to operations or supply chain, Some IT or system failures; Low: No Material disruptions to operations or supply chain, No significant IT or system failures"
+            }
+        }
+        
+        # Process each category for risk classification
+        fifth_results = []
+        categories = ["Balance Sheet Issues", "P&L (Income Statement) Issues", "Liquidity Issues", 
+                     "Management and Strategy related Issues", "Regulatory Issues", 
+                     "Industry and Market Issues", "Operational Issues"]
+        
+        for category in categories:
+            print(f"Classifying risk for: {category}")
+            
+            # Create category-specific prompt
+            category_criteria = risk_criteria.get(category, {})
+            criteria_text = ""
+            for criteria_name, criteria_desc in category_criteria.items():
+                criteria_text += f"{criteria_name}: {criteria_desc}\n"
+            
+            fifth_prompt = f"""
+            
+You are a financial risk analyst. Based on the summary provided and the previous year's financial data, classify each red flag in the {category} category into High, Medium, Low, or Not_Applicable risk levels.
+
+Criteria for {category}:
+{criteria_text}
+
+Summary from previous iteration:
+{fourth_response}
+
+Previous Year Financial Data:
+{previous_year_data}
+
+For each bullet point under {category}, analyze it against the criteria and classify the risk level.
+
+Output Format:
+### {category} Risk Classification
+
+For each red flag found in {category}:
+• [Red flag summary]
+  - High: yes/no (with explanation if yes)
+  - Medium: yes/no (with explanation if yes) 
+  - Low: yes/no (with explanation if yes)
+  - Not_Applicable: yes/no
+
+If no red flags exist in this category, state: "No red flags present in this category."
+
+Analysis should be based on:
+1. Quantitative thresholds mentioned in the criteria
+2. Comparison with previous year data provided
+3. Qualitative assessment of the described issues
+
+"""
+            
+            fifth_full_prompt = f"""You must answer the question strictly based on the below given context.
+
+Context:
+{pipeline_1st.docs[0]["context"]}
+
+Previous Analysis: {fourth_response}
+
+Based on the above analysis and the original context, please answer: {fifth_prompt}
+
+Answer:"""
+            
+            category_response = pipeline_1st.llm._call(fifth_full_prompt)
+            fifth_results.append({
+                "category": category,
+                "risk_classification": category_response
+            })
+        
+        # Combine all risk classifications
+        combined_fifth_response = ""
+        for result in fifth_results:
+            combined_fifth_response += f"\n{result['risk_classification']}\n"
+        
+        # Extract company information from first page
+        print("Extracting company information...")
+        company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
+        print(f"Identified company: {company_info}")
+        
+        # Parse risk classifications
+        print("Parsing risk classifications...")
+        risk_flags = parse_risk_classifications(combined_fifth_response)
+        
+        # Parse summary by categories
+        print("Parsing summary by categories...")
+        summary_by_categories = parse_summary_by_categories(fourth_response)
+        
+        # Create Word document
+        print("Creating Word document...")
+        word_doc_path = create_word_document(
+            pdf_name=pdf_name,
+            company_info=company_info,
+            risk_flags=risk_flags,
+            summary_by_categories=summary_by_categories,
+            output_folder=output_folder
+        )
+        
+        # Save all results together
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        all_results = pd.DataFrame({
+            "pdf_name": [pdf_name, pdf_name, pdf_name, pdf_name, pdf_name],
+            "iteration": [1, 2, 3, 4, 5],
+            "stage": [
+                "Initial Analysis",
+                "Deduplication", 
+                "Categorization",
+                "Summary Generation",
+                "Risk Classification"
+            ],
+            "prompt": [
+                first_results_df.iloc[0]['query'],  # Original query from 1st iteration
+                second_prompt,
+                third_prompt,
+                fourth_prompt,
+                "Risk Classification for all categories"
+            ],
+            "response": [
+                first_response,
+                second_response,
+                third_response,
+                fourth_response,
+                combined_fifth_response
+            ],
+            "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
+        })
+        
+        # Save complete results
+        complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_5iteration_pipeline_results.csv")
+        all_results.to_csv(complete_output_file, index=False)
+        
+        # Save individual risk classification results
+        risk_df = pd.DataFrame(fifth_results)
+        risk_output_file = os.path.join(output_folder, f"{pdf_name}_risk_classification.csv")
+        risk_df.to_csv(risk_output_file, index=False)
+        
+        print(f"Complete 5-iteration pipeline finished for {pdf_name}!")
+        print(f"CSV Results saved to: {complete_output_file}")
+        print(f"Risk classification saved to: {risk_output_file}")
+        print(f"Word document saved to: {word_doc_path}")
+        
+        return all_results
+        
+    except Exception as e:
+        print(f"Error processing {pdf_name}: {str(e)}")
+        # Save error log
+        error_df = pd.DataFrame({
+            "pdf_name": [pdf_name],
+            "error": [str(e)],
+            "timestamp": [time.strftime("%Y%m%d_%H%M%S")]
+        })
+        error_file = os.path.join(output_folder, f"{pdf_name}_error_log.csv")
+        error_df.to_csv(error_file, index=False)
+        return None
+
+def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+    """
+    Process multiple PDFs from a folder through the 5-iteration pipeline including risk classification
+    
+    Args:
+        pdf_folder_path: Path to folder containing PDF files
+        queries_csv_path: Path to CSV/Excel file containing queries
+        previous_year_data: String containing previous year financial data
+        output_folder: Path to output folder for results
+    """
+    
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Get all PDF files from the folder
+    pdf_files = glob.glob(os.path.join(pdf_folder_path, "*.pdf"))
+    
+    if not pdf_files:
+        print(f"No PDF files found in {pdf_folder_path}")
+        return
+    
+    print(f"Found {len(pdf_files)} PDF files to process:")
+    for pdf_file in pdf_files:
+        print(f"  - {os.path.basename(pdf_file)}")
+    
+    print(f"\nStarting batch processing with 5 iterations...")
+    print(f"Output folder: {output_folder}")
+    print("=" * 60)
+    
+    # Process each PDF
+    successful_processing = []
+    failed_processing = []
+    
+    for i, pdf_file in enumerate(pdf_files, 1):
+        print(f"\n[{i}/{len(pdf_files)}] Processing: {os.path.basename(pdf_file)}")
+        
+        try:
+            result = process_single_pdf_five_iterations(
+                pdf_path=pdf_file,
+                queries_csv_path=queries_csv_path,
+                previous_year_data=previous_year_data,
+                output_folder=output_folder
+            )
+            
+            if result is not None:
+                successful_processing.append(os.path.basename(pdf_file))
+            else:
+                failed_processing.append(os.path.basename(pdf_file))
+                
+        except Exception as e:
+            print(f"Failed to process {os.path.basename(pdf_file)}: {str(e)}")
+            failed_processing.append(os.path.basename(pdf_file))
+    
+    if successful_processing:
+        print(f"\nSuccessfully processed:")
+        for file in successful_processing:
+            print(f"  ✓ {file}")
+    
+    if failed_processing:
+        print(f"\nFailed to process:")
+        for file in failed_processing:
+            print(f"  ✗ {file}")
+
+def extract_company_info_from_pdf(pdf_path: str, llm: HostedLLM) -> str:
+    """Extract company name, quarter, and financial year from first page of PDF"""
+    try:
+        doc = fitz.open(pdf_path)
+        first_page_text = doc[0].get_text()
+        doc.close()
+        
+        # Limit text to first 2000 characters to avoid token limits
+        first_page_text = first_page_text[:2000]
+        
+        prompt = f"""
+You are a financial document analyst. Extract the company name, quarter, and financial year from the following text which is from the first page of an earnings call transcript or financial document.
+
+Text from first page:
+{first_page_text}
+
+Please identify:
+1. Company Name (full company name including Ltd/Limited/Inc etc.)
+2. Quarter (Q1/Q2/Q3/Q4)
+3. Financial Year (FY23/FY24/FY25 etc.)
+
+Format your response as: [Company Name]-[Quarter][Financial Year]
+Example: Reliance Industries Limited-Q4FY25
+
+If you cannot find clear information, make the best estimate based on available data.
+
+Response:"""
+        
+        response = llm._call(prompt)
+        # Clean the response to get just the formatted string
+        response_lines = response.strip().split('\n')
+        for line in response_lines:
+            if '-Q' in line and 'FY' in line:
+                return line.strip()
+        
+        # Fallback - return first non-empty line
+        return response_lines[0].strip() if response_lines else "Unknown Company-Q1FY25"
+        
+    except Exception as e:
+        logger.error(f"Error extracting company info: {e}")
+        return "Unknown Company-Q1FY25"
+
+def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[str]]:
+    """Parse the risk classification response to extract categorized flags"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    # Split by categories
+    categories = combined_fifth_response.split('###')
+    
+    for category_text in categories:
+        if not category_text.strip():
+            continue
+            
+        lines = category_text.split('\n')
+        current_flag = ""
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('•') or line.startswith('-'):
+                current_flag = line[1:].strip()  # Remove bullet point
+            elif '- High: yes' in line and current_flag:
+                risk_flags['High'].append(current_flag)
+                current_flag = ""
+            elif '- Medium: yes' in line and current_flag:
+                risk_flags['Medium'].append(current_flag)
+                current_flag = ""
+            elif '- Low: yes' in line and current_flag:
+                risk_flags['Low'].append(current_flag)
+                current_flag = ""
+    
+    return risk_flags
+
+def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
+    """Parse the 4th iteration summary response by categories"""
+    categories_summary = {}
+    
+    # Split by ### headers
+    sections = fourth_response.split('###')
+    
+    for section in sections:
+        if not section.strip():
+            continue
+            
+        lines = section.split('\n')
+        category_name = ""
+        bullets = []
+        
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('•') and not line.startswith('-'):
+                # This is likely the category name
+                category_name = line.strip()
+            elif line.startswith('•') or line.startswith('-'):
+                # This is a bullet point
+                bullet_text = line[1:].strip()  # Remove bullet symbol
+                if bullet_text:
+                    bullets.append(bullet_text)
+        
+        if category_name and bullets:
+            categories_summary[category_name] = bullets
+    
+    return categories_summary
+
+def create_word_document(pdf_name: str, company_info: str, risk_flags: Dict[str, List[str]], 
+                        summary_by_categories: Dict[str, List[str]], output_folder: str) -> str:
+    """Create a formatted Word document with the analysis results"""
+    
+    # Create new document
+    doc = Document()
+    
+    # Set document title
+    title = doc.add_heading(company_info, 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add Flag Distribution section
+    flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+    flag_dist_heading.runs[0].bold = True
+    
+    # Create table for flag distribution
+    table = doc.add_table(rows=4, cols=2)
+    table.style = 'Table Grid'
+    
+    # Add table headers and data
+    table.cell(0, 0).text = 'High Risk'
+    table.cell(0, 1).text = str(len(risk_flags['High']))
+    table.cell(1, 0).text = 'Medium Risk'
+    table.cell(1, 1).text = str(len(risk_flags['Medium']))
+    table.cell(2, 0).text = 'Low Risk'
+    table.cell(2, 1).text = str(len(risk_flags['Low']))
+    table.cell(3, 0).text = 'Total Flags'
+    table.cell(3, 1).text = str(len(risk_flags['High']) + len(risk_flags['Medium']) + len(risk_flags['Low']))
+    
+    # Make table headers bold
+    for i in range(4):
+        table.cell(i, 0).paragraphs[0].runs[0].bold = True
+    
+    # Add space
+    doc.add_paragraph('')
+    
+    # Add High Risk Flags section only
+    if risk_flags['High']:
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        
+        for flag in risk_flags['High']:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(flag)
+    
+    # Add horizontal line
+    doc.add_paragraph('_' * 50)
+    
+    # Add Summary section
+    summary_heading = doc.add_heading('Summary', level=1)
+    summary_heading.runs[0].bold = True
+    
+    # Add categorized summary
+    for category, bullets in summary_by_categories.items():
+        if bullets:  # Only add if there are bullets
+            # Add category as subheading
+            cat_heading = doc.add_heading(category, level=2)
+            cat_heading.runs[0].bold = True
+            
+            # Add bullet points for this category
+            for bullet in bullets:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(bullet)
+            
+            # Add space between categories
+            doc.add_paragraph('')
+    
+    # Save document
+    doc_filename = f"{pdf_name}_Report.docx"
+    doc_path = os.path.join(output_folder, doc_filename)
+    doc.save(doc_path)
+    
+    return doc_path
+    
+    pdf_folder_path = r"pdf_KEC"
+    queries_csv_path = r"EWS_prompts_v2.xlsx"       
+    output_folder = r"KEC_result_5iterations"
+    
+    # Previous year data - you can modify this for each company
+    previous_year_data = """
+Parameter	Mar-23	Unit
+Previous reported Debt	3,194	Cr
+Current quarter ebidta	244	Cr
+Previous reported asset value	18,668	Cr
+Previous reported receivable days	260	days
+Previous reported payable days	236	days
+Previous reported revenue	17,282	Cr
+Previous reported profitability	943	Cr
+Previous reported operating margin	5.50%	 
+Previous reported cash balance	344	Cr
+Previous reported current liabilities	14,209	Cr
+"""
+
+    run_multiple_pdfs_five_iterations_pipeline(
+        pdf_folder_path=pdf_folder_path,
+        queries_csv_path=queries_csv_path,
+        previous_year_data=previous_year_data,
+        output_folder=output_folder
+    )
+
+if __name__ == "__main__":
+    main_batch_processing_five_iterations()
