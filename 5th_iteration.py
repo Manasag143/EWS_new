@@ -101,3 +101,69 @@ Since there are no specific red flags mentioned in the Regulatory Issues categor
   - Medium: no 
   - Low: no 
   - Not_Applicable: no
+
+
+
+
+
+
+
+
+
+
+
+def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[str]]:
+    """Parse the risk classification response to extract categorized flags"""
+    risk_flags = {
+        'High': [],
+        'Medium': [],
+        'Low': []
+    }
+    
+    print("DEBUG: Parsing risk classifications...")
+    print(f"DEBUG: Response length: {len(combined_fifth_response)}")
+    
+    # Split by categories
+    categories = combined_fifth_response.split('###')
+    
+    for category_text in categories:
+        if not category_text.strip():
+            continue
+            
+        lines = category_text.split('\n')
+        current_flag = ""
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Check for bullet points (multiple formats)
+            if line.startswith('•') or line.startswith('-') or line.startswith('*') or line.startswith('â€¢'):
+                current_flag = line[1:].strip()  # Remove bullet point
+                print(f"DEBUG: Found flag: {current_flag}")
+            
+            # Check for risk classifications with flexible matching
+            elif current_flag:
+                line_lower = line.lower()
+                
+                # Look for "High: yes" pattern (case insensitive, flexible spacing)
+                if ('high:' in line_lower and 'yes' in line_lower) or ('- high:' in line_lower and 'yes' in line_lower):
+                    risk_flags['High'].append(current_flag)
+                    print(f"DEBUG: Added HIGH risk: {current_flag}")
+                    current_flag = ""
+                
+                # Look for "Medium: yes" pattern
+                elif ('medium:' in line_lower and 'yes' in line_lower) or ('- medium:' in line_lower and 'yes' in line_lower):
+                    risk_flags['Medium'].append(current_flag)
+                    print(f"DEBUG: Added MEDIUM risk: {current_flag}")
+                    current_flag = ""
+                
+                # Look for "Low: yes" pattern
+                elif ('low:' in line_lower and 'yes' in line_lower) or ('- low:' in line_lower and 'yes' in line_lower):
+                    risk_flags['Low'].append(current_flag)
+                    print(f"DEBUG: Added LOW risk: {current_flag}")
+                    current_flag = ""
+    
+    print(f"DEBUG: Final counts - High: {len(risk_flags['High'])}, Medium: {len(risk_flags['Medium'])}, Low: {len(risk_flags['Low'])}")
+    print(f"DEBUG: High risk flags: {risk_flags['High']}")
+    
+    return risk_flags
