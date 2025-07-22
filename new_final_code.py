@@ -390,7 +390,80 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def parse_risk_classifications(combined_fifth_response: str) -> Dict[str, List[str]]:
+def extract_risk_data_using_llm(combined_fifth_response: str, llm: HostedLLM) -> Dict[str, Any]:
+    """Use LLM to extract risk counts and high-risk flags from 5th iteration response"""
+    
+    extraction_prompt = f"""
+You are a data extraction expert. Analyze the risk classification response below and extract the following information:
+
+1. Count how many flags are classified as "High: yes"
+2. Count how many flags are classified as "Medium: yes" 
+3. Count how many flags are classified as "Low: yes"
+4. List all the flag descriptions that have "High: yes"
+
+Risk Classification Response:
+{combined_fifth_response}
+
+Provide your response in this EXACT format:
+HIGH_COUNT: [number]
+MEDIUM_COUNT: [number]
+LOW_COUNT: [number]
+HIGH_RISK_FLAGS:
+- [High risk flag 1 description]
+- [High risk flag 2 description]
+- [High risk flag 3 description]
+(continue for all high risk flags)
+
+Only include the flag descriptions (the text after * and before the risk classifications), not the "High: yes" part.
+"""
+    
+    response = llm._call(extraction_prompt)
+    print(f"DEBUG LLM EXTRACTION: {response}")
+    
+    # Parse the LLM response
+    risk_data = {
+        'High': [],
+        'Medium': [],
+        'Low': [],
+        'counts': {'High': 0, 'Medium': 0, 'Low': 0}
+    }
+    
+    lines = response.split('\n')
+    in_high_flags_section = False
+    
+    for line in lines:
+        line = line.strip()
+        
+        if 'HIGH_COUNT:' in line:
+            try:
+                risk_data['counts']['High'] = int(line.split(':')[1].strip())
+            except:
+                risk_data['counts']['High'] = 0
+                
+        elif 'MEDIUM_COUNT:' in line:
+            try:
+                risk_data['counts']['Medium'] = int(line.split(':')[1].strip())
+            except:
+                risk_data['counts']['Medium'] = 0
+                
+        elif 'LOW_COUNT:' in line:
+            try:
+                risk_data['counts']['Low'] = int(line.split(':')[1].strip())
+            except:
+                risk_data['counts']['Low'] = 0
+                
+        elif 'HIGH_RISK_FLAGS:' in line:
+            in_high_flags_section = True
+            
+        elif in_high_flags_section and line.startswith('- '):
+            flag_text = line[2:].strip()  # Remove "- "
+            if flag_text:
+                risk_data['High'].append(flag_text)
+    
+    print(f"DEBUG EXTRACTED: High={risk_data['counts']['High']}, Medium={risk_data['counts']['Medium']}, Low={risk_data['counts']['Low']}")
+    print(f"DEBUG HIGH FLAGS: {risk_data['High']}")
+    
+    return risk_data
     """Parse the risk classification response to extract categorized flags"""
     risk_flags = {
         'High': [],
