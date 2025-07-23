@@ -9,7 +9,7 @@ import logging
 import json
 import ast
 import re
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any
 import glob
 from pathlib import Path
  
@@ -24,13 +24,8 @@ def getFilehash(file_path: str):
 
 def parse_risk_classification_response(response_text: str) -> Dict:
     """
-    Parse the 5th iteration response to extract risk flag counts and HIGH RISK summaries only
-    
-    Args:
-        response_text: The response from 5th iteration containing risk classifications
-        
-    Returns:
-        Dictionary containing counts and HIGH RISK summaries only
+    Parse the 5th iteration response to extract risk flag counts and HIGH RISK summaries
+    This replaces LLM calls for counting and summary extraction
     """
     
     # Convert to lowercase for case-insensitive matching
@@ -87,163 +82,11 @@ def parse_risk_classification_response(response_text: str) -> Dict:
             count_low += 1
     
     return {
-        'counts': {
-            'high': count_high,
-            'medium': count_medium,
-            'low': count_low,
-            'total': count_high + count_medium + count_low
-        },
+        'high_count': count_high,
+        'medium_count': count_medium,
+        'low_count': count_low,
+        'total_count': count_high + count_medium + count_low,
         'high_risk_summaries': high_summaries
-    }
-
-def extract_category_wise_counts(response_text: str) -> Dict:
-    """
-    Extract risk counts by category
-    
-    Args:
-        response_text: The response from 5th iteration
-        
-    Returns:
-        Dictionary with category-wise risk counts
-    """
-    
-    categories = [
-        "Balance Sheet Issues",
-        "P&L (Income Statement) Issues", 
-        "Liquidity Issues",
-        "Management and Strategy related Issues",
-        "Regulatory Issues",
-        "Industry and Market Issues",
-        "Operational Issues"
-    ]
-    
-    category_counts = {}
-    
-    for category in categories:
-        # Find the section for this category
-        pattern = f"###\s*{re.escape(category)}\s*Risk Classification"
-        category_section = ""
-        
-        # Extract the section for this category
-        lines = response_text.split('\n')
-        in_category = False
-        category_lines = []
-        
-        for line in lines:
-            if re.search(pattern, line, re.IGNORECASE):
-                in_category = True
-                continue
-            elif line.startswith("###") and in_category:
-                break
-            elif in_category:
-                category_lines.append(line)
-        
-        category_section = '\n'.join(category_lines)
-        
-        # Count risks in this category
-        if "No red flags present in this category" in category_section:
-            category_counts[category] = {
-                'high': 0, 'medium': 0, 'low': 0, 'total': 0
-            }
-        else:
-            parsed = parse_risk_classification_response(category_section)
-            category_counts[category] = parsed['counts']
-    
-    return category_counts
-
-def create_summary_dataframe(parsed_results: Dict) -> pd.DataFrame:
-    """
-    Create a pandas DataFrame with HIGH RISK flag summaries only
-    
-    Args:
-        parsed_results: Results from parse_risk_classification_response
-        
-    Returns:
-        DataFrame with HIGH RISK flag summaries only
-    """
-    
-    all_summaries = []
-    
-    # Only process HIGH RISK summaries
-    for summary_info in parsed_results['high_risk_summaries']:
-        all_summaries.append({
-            'risk_level': 'High',
-            'category': summary_info['category'],
-            'summary': summary_info['summary']
-        })
-    
-    return pd.DataFrame(all_summaries)
-
-def format_summary_output(parsed_results: Dict) -> str:
-    """
-    Format the parsed results into a readable summary - Only counts and HIGH RISK summaries
-    
-    Args:
-        parsed_results: Results from parse_risk_classification_response
-        
-    Returns:
-        Formatted string summary with counts and HIGH RISK summaries only
-    """
-    
-    output = []
-    output.append("RISK CLASSIFICATION SUMMARY")
-    output.append("=" * 50)
-    
-    # Risk counts only
-    counts = parsed_results['counts']
-    output.append(f"Total Risk Flags: {counts['total']}")
-    output.append(f"  • High Risk: {counts['high']}")
-    output.append(f"  • Medium Risk: {counts['medium']}")
-    output.append(f"  • Low Risk: {counts['low']}")
-    output.append("")
-    
-    # Only HIGH RISK summaries
-    high_summaries = parsed_results['high_risk_summaries']
-    if high_summaries:
-        output.append(f"HIGH RISK FLAGS ({len(high_summaries)}):")
-        output.append("-" * 30)
-        
-        for i, summary_info in enumerate(high_summaries, 1):
-            output.append(f"{i}. Category: {summary_info['category']}")
-            output.append(f"   Summary: {summary_info['summary']}")
-            output.append("")
-    else:
-        output.append("No HIGH RISK flags identified.")
-        output.append("")
-    
-    return "\n".join(output)
-
-def process_fifth_iteration_with_parsing(fifth_iteration_response: str, pdf_name: str) -> Dict:
-    """
-    Process the 5th iteration response and extract structured data using PARSING instead of LLM
-    
-    Args:
-        fifth_iteration_response: The combined response from 5th iteration
-        pdf_name: Name of the PDF being processed
-        
-    Returns:
-        Dictionary with all parsed information
-    """
-    
-    # Parse the response using parsing instead of LLM
-    parsed_results = parse_risk_classification_response(fifth_iteration_response)
-    
-    # Get category-wise counts
-    category_counts = extract_category_wise_counts(fifth_iteration_response)
-    
-    # Create summary DataFrame
-    summary_df = create_summary_dataframe(parsed_results)
-    
-    # Format output
-    formatted_summary = format_summary_output(parsed_results)
-    
-    return {
-        'pdf_name': pdf_name,
-        'overall_counts': parsed_results['counts'],
-        'category_counts': category_counts,
-        'summaries_dataframe': summary_df,
-        'formatted_summary': formatted_summary,
-        'high_risk_summaries': parsed_results['high_risk_summaries']
     }
  
 class HostedLLM:
@@ -568,9 +411,10 @@ Answer:"""
         results_df.to_csv(output_path, index=False)
         return output_path
 
-def process_single_pdf_five_iterations_with_parsing(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
     """
-    Process a single PDF through the 5-iteration pipeline including risk classification with PARSING instead of LLM
+    Process a single PDF through the 5-iteration pipeline including risk classification
+    Uses parsing instead of LLM for counting and summary extraction in 5th iteration
     """
     
     # Create output folder if it doesn't exist
@@ -849,11 +693,11 @@ Answer:"""
         for result in fifth_results:
             combined_fifth_response += f"\n{result['risk_classification']}\n"
         
-        # PARSING SECTION - Parse the 5th iteration results using PARSING instead of LLM
-        print("Parsing 5th iteration results using PARSING (no LLM calls)...")
-        parsed_risk_data = process_fifth_iteration_with_parsing(combined_fifth_response, pdf_name)
+        # PARSING SECTION - Use parsing instead of LLM for counting and summary extraction
+        print("Parsing risk flags using parsing technique instead of LLM...")
+        parsed_data = parse_risk_classification_response(combined_fifth_response)
         
-        # Save all results together
+        # Save all results together - SAME AS ORIGINAL
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         all_results = pd.DataFrame({
             "pdf_name": [pdf_name, pdf_name, pdf_name, pdf_name, pdf_name],
@@ -866,7 +710,7 @@ Answer:"""
                 "Risk Classification"
             ],
             "prompt": [
-                first_results_df.iloc[0]['query'],
+                first_results_df.iloc[0]['query'],  # Original query from 1st iteration
                 second_prompt,
                 third_prompt,
                 fourth_prompt,
@@ -882,84 +726,156 @@ Answer:"""
             "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
         })
         
-        # Save complete results
+        # Save complete results - SAME AS ORIGINAL
         complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_5iteration_pipeline_results.csv")
         all_results.to_csv(complete_output_file, index=False)
         
-        # Save parsed risk count summary
-        risk_counts_df = pd.DataFrame([{
-            'pdf_name': pdf_name,
-            'timestamp': timestamp,
-            'high_risk_count': parsed_risk_data['overall_counts']['high'],
-            'medium_risk_count': parsed_risk_data['overall_counts']['medium'],
-            'low_risk_count': parsed_risk_data['overall_counts']['low'],
-            'total_flags': parsed_risk_data['overall_counts']['total']
-        }])
-        
-        risk_counts_file = os.path.join(output_folder, f"{pdf_name}_risk_counts_summary.csv")
-        risk_counts_df.to_csv(risk_counts_file, index=False)
-        
-        # Save detailed HIGH RISK summaries only
-        summaries_df = parsed_risk_data['summaries_dataframe']
-        if not summaries_df.empty:
-            summaries_df['pdf_name'] = pdf_name
-            summaries_df['timestamp'] = timestamp
-            
-            summaries_file = os.path.join(output_folder, f"{pdf_name}_HIGH_RISK_summaries.csv")
-            summaries_df.to_csv(summaries_file, index=False)
-        
-        # Save category-wise counts
-        category_data = []
-        for category, counts in parsed_risk_data['category_counts'].items():
-            category_data.append({
-                'pdf_name': pdf_name,
-                'timestamp': timestamp,
-                'category': category,
-                'high_count': counts['high'],
-                'medium_count': counts['medium'],
-                'low_count': counts['low'],
-                'total_count': counts['total']
-            })
-        
-        category_df = pd.DataFrame(category_data)
-        category_file = os.path.join(output_folder, f"{pdf_name}_category_wise_counts.csv")
-        category_df.to_csv(category_file, index=False)
-        
-        # Save formatted summary as text file (Word-like format)
-        formatted_summary_file = os.path.join(output_folder, f"{pdf_name}_formatted_summary.txt")
-        with open(formatted_summary_file, 'w', encoding='utf-8') as f:
-            f.write(parsed_risk_data['formatted_summary'])
-        
-        # Save individual risk classification results (original format)
+        # Save individual risk classification results - SAME AS ORIGINAL
         risk_df = pd.DataFrame(fifth_results)
         risk_output_file = os.path.join(output_folder, f"{pdf_name}_risk_classification.csv")
         risk_df.to_csv(risk_output_file, index=False)
         
-        print(f"\nComplete 5-iteration pipeline with PARSING finished for {pdf_name}!")
-        print(f"\nRISK CLASSIFICATION RESULTS (using PARSING):")
-        print(f"High Risk Flags: {parsed_risk_data['overall_counts']['high']}")
-        print(f"Medium Risk Flags: {parsed_risk_data['overall_counts']['medium']}")
-        print(f"Low Risk Flags: {parsed_risk_data['overall_counts']['low']}")
-        print(f"Total Flags: {parsed_risk_data['overall_counts']['total']}")
+        # Create enhanced Word document with specific structure requested
+        try:
+            from docx import Document
+            from docx.shared import Inches
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.shared import RGBColor
+            
+            doc = Document()
+            
+            # Title
+            title = doc.add_heading(f'Financial Risk Analysis Report - {pdf_name}', 0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            # Flag Distribution Section
+            flag_dist_heading = doc.add_heading('Flag Distribution', level=1)
+            flag_dist_heading.runs[0].bold = True
+            
+            # Create table for flag distribution
+            table = doc.add_table(rows=5, cols=2)
+            table.style = 'Table Grid'
+            
+            # Table headers
+            hdr_cells = table.rows[0].cells
+            hdr_cells[0].text = 'Flags'
+            hdr_cells[1].text = 'Count of Flags'
+            
+            # Make header bold
+            for cell in hdr_cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.bold = True
+            
+            # Fill table data
+            flag_data = [
+                ['High', str(parsed_data['high_count'])],
+                ['Medium', str(parsed_data['medium_count'])],
+                ['Low', str(parsed_data['low_count'])],
+                ['Total Flags', str(parsed_data['total_count'])]
+            ]
+            
+            for i, (flag_type, count) in enumerate(flag_data, 1):
+                row_cells = table.rows[i].cells
+                row_cells[0].text = flag_type
+                row_cells[1].text = count
+            
+            # Add spacing after table
+            doc.add_paragraph()
+            
+            # High Risk Flags Section
+            high_risk_heading = doc.add_heading('High Risk Flags:', level=1)
+            high_risk_heading.runs[0].bold = True
+            
+            # High Risk Details
+            if parsed_data['high_risk_summaries']:
+                for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
+                    para = doc.add_paragraph()
+                    para.add_run(f'{i}. Category: {risk_item["category"]}\n').bold = True
+                    para.add_run(f'Summary: {risk_item["summary"]}\n')
+                    doc.add_paragraph()  # Add spacing
+            else:
+                doc.add_paragraph('No high-risk flags identified.')
+            
+            # Big Bold Line (separator)
+            separator_para = doc.add_paragraph()
+            separator_run = separator_para.add_run('_' * 80)
+            separator_run.bold = True
+            separator_run.font.size = Inches(0.2)
+            
+            # Add spacing after separator
+            doc.add_paragraph()
+            
+            # Summary Section
+            summary_heading = doc.add_heading('Summary', level=1)
+            summary_heading.runs[0].bold = True
+            
+            # Add 4th iteration summary content
+            doc.add_paragraph(fourth_response)
+            
+            # Save Word document
+            word_output_file = os.path.join(output_folder, f"{pdf_name}_analysis_report.docx")
+            doc.save(word_output_file)
+            print(f"  - Analysis report: {word_output_file}")
+            
+        except ImportError:
+            # If python-docx not available, create text file with same structure
+            word_content = f"""FINANCIAL RISK ANALYSIS REPORT - {pdf_name.upper()}
+
+FLAG DISTRIBUTION
+═════════════════
+
+Flags                Count of Flags
+─────────────────────────────────────
+High                 {parsed_data['high_count']}
+Medium               {parsed_data['medium_count']}
+Low                  {parsed_data['low_count']}
+Total Flags          {parsed_data['total_count']}
+
+HIGH RISK FLAGS:
+════════════════
+
+"""
+            
+            if parsed_data['high_risk_summaries']:
+                for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
+                    word_content += f"{i}. Category: {risk_item['category']}\n"
+                    word_content += f"   Summary: {risk_item['summary']}\n\n"
+            else:
+                word_content += "No high-risk flags identified.\n\n"
+            
+            word_content += f"""
+{'═'*80}
+
+SUMMARY
+═══════
+
+{fourth_response}
+"""
+            
+            # Save as text file
+            word_output_file = os.path.join(output_folder, f"{pdf_name}_analysis_report.txt")
+            with open(word_output_file, 'w', encoding='utf-8') as f:
+                f.write(word_content)
+            print(f"  - Analysis report: {word_output_file}")
         
-        print(f"\nFiles saved:")
-        print(f"  - Complete pipeline results: {complete_output_file}")
-        print(f"  - Risk counts summary: {risk_counts_file}")
-        if not summaries_df.empty:
-            print(f"  - HIGH RISK summaries: {summaries_file}")
-        print(f"  - Category counts: {category_file}")
-        print(f"  - Formatted summary (Word-like): {formatted_summary_file}")
-        print(f"  - Risk classification (original): {risk_output_file}")
+        print(f"\nComplete 5-iteration pipeline finished for {pdf_name}!")
+        print(f"Results saved to: {complete_output_file}")
+        print(f"Risk classification saved to: {risk_output_file}")
         
-        # Print HIGH RISK summaries only using PARSING
-        if parsed_risk_data['high_risk_summaries']:
-            print(f"\nHIGH RISK SUMMARIES (extracted using PARSING):")
-            for i, summary in enumerate(parsed_risk_data['high_risk_summaries'], 1):
-                print(f"{i}. [{summary['category']}] {summary['summary']}")
-        else:
-            print(f"\nNo HIGH RISK flags identified.")
+        # Print parsed results
+        print(f"\nRisk Flag Counts (using parsing):")
+        print(f"High Risk: {parsed_data['high_count']}")
+        print(f"Medium Risk: {parsed_data['medium_count']}")
+        print(f"Low Risk: {parsed_data['low_count']}")
+        print(f"Total: {parsed_data['total_count']}")
         
-        return parsed_risk_data
+        if parsed_data['high_risk_summaries']:
+            print(f"\nHigh Risk Summaries:")
+            for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
+                print(f"{i}. [{risk_item['category']}] {risk_item['summary']}")
+        
+        return all_results
         
     except Exception as e:
         print(f"Error processing {pdf_name}: {str(e)}")
@@ -973,9 +889,10 @@ Answer:"""
         error_df.to_csv(error_file, index=False)
         return None
 
-def run_multiple_pdfs_five_iterations_pipeline_with_parsing(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
     """
-    Process multiple PDFs from a folder through the 5-iteration pipeline including risk classification with PARSING
+    Process multiple PDFs from a folder through the 5-iteration pipeline including risk classification
+    Same as original but uses parsing for risk flag counting and summary extraction
     
     Args:
         pdf_folder_path: Path to folder containing PDF files
@@ -998,20 +915,19 @@ def run_multiple_pdfs_five_iterations_pipeline_with_parsing(pdf_folder_path: str
     for pdf_file in pdf_files:
         print(f"  - {os.path.basename(pdf_file)}")
     
-    print(f"\nStarting batch processing with 5 iterations and PARSING...")
+    print(f"\nStarting batch processing with 5 iterations...")
     print(f"Output folder: {output_folder}")
     print("=" * 60)
     
     # Process each PDF
     successful_processing = []
     failed_processing = []
-    all_parsed_results = []
     
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"\n[{i}/{len(pdf_files)}] Processing: {os.path.basename(pdf_file)}")
         
         try:
-            result = process_single_pdf_five_iterations_with_parsing(
+            result = process_single_pdf_five_iterations(
                 pdf_path=pdf_file,
                 queries_csv_path=queries_csv_path,
                 previous_year_data=previous_year_data,
@@ -1020,7 +936,6 @@ def run_multiple_pdfs_five_iterations_pipeline_with_parsing(pdf_folder_path: str
             
             if result is not None:
                 successful_processing.append(os.path.basename(pdf_file))
-                all_parsed_results.append(result)
             else:
                 failed_processing.append(os.path.basename(pdf_file))
                 
@@ -1028,105 +943,24 @@ def run_multiple_pdfs_five_iterations_pipeline_with_parsing(pdf_folder_path: str
             print(f"Failed to process {os.path.basename(pdf_file)}: {str(e)}")
             failed_processing.append(os.path.basename(pdf_file))
     
-    # Create consolidated summary report using PARSING
-    if all_parsed_results:
-        print(f"\nCreating consolidated summary report using PARSING...")
-        
-        # Consolidated risk counts
-        consolidated_counts = []
-        consolidated_summaries = []
-        consolidated_categories = []
-        
-        for result in all_parsed_results:
-            # Overall counts
-            counts_row = {
-                'pdf_name': result['pdf_name'],
-                'high_risk_count': result['overall_counts']['high'],
-                'medium_risk_count': result['overall_counts']['medium'],
-                'low_risk_count': result['overall_counts']['low'],
-                'total_flags': result['overall_counts']['total']
-            }
-            consolidated_counts.append(counts_row)
-            
-            # Detailed HIGH RISK summaries only
-            if not result['summaries_dataframe'].empty:
-                summaries_df = result['summaries_dataframe'].copy()
-                summaries_df['pdf_name'] = result['pdf_name']
-                consolidated_summaries.append(summaries_df)
-            
-            # Category-wise counts
-            for category, counts in result['category_counts'].items():
-                category_row = {
-                    'pdf_name': result['pdf_name'],
-                    'category': category,
-                    'high_count': counts['high'],
-                    'medium_count': counts['medium'],
-                    'low_count': counts['low'],
-                    'total_count': counts['total']
-                }
-                consolidated_categories.append(category_row)
-        
-        # Save consolidated reports
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        
-        # Consolidated risk counts
-        consolidated_counts_df = pd.DataFrame(consolidated_counts)
-        consolidated_counts_file = os.path.join(output_folder, f"consolidated_risk_counts_{timestamp}.csv")
-        consolidated_counts_df.to_csv(consolidated_counts_file, index=False)
-        
-        # Consolidated HIGH RISK summaries only
-        if consolidated_summaries:
-            consolidated_summaries_df = pd.concat(consolidated_summaries, ignore_index=True)
-            consolidated_summaries_file = os.path.join(output_folder, f"consolidated_HIGH_RISK_summaries_{timestamp}.csv")
-            consolidated_summaries_df.to_csv(consolidated_summaries_file, index=False)
-        
-        # Consolidated category counts
-        consolidated_categories_df = pd.DataFrame(consolidated_categories)
-        consolidated_categories_file = os.path.join(output_folder, f"consolidated_category_counts_{timestamp}.csv")
-        consolidated_categories_df.to_csv(consolidated_categories_file, index=False)
-        
-        print(f"\nConsolidated reports saved:")
-        print(f"  - Consolidated risk counts: {consolidated_counts_file}")
-        if consolidated_summaries:
-            print(f"  - Consolidated HIGH RISK summaries: {consolidated_summaries_file}")
-        print(f"  - Consolidated category counts: {consolidated_categories_file}")
-    
-    # Final summary
-    print(f"\n" + "=" * 60)
-    print(f"BATCH PROCESSING COMPLETE (using PARSING)")
-    print(f"=" * 60)
-    
     if successful_processing:
-        print(f"\nSuccessfully processed ({len(successful_processing)}):")
+        print(f"\nSuccessfully processed:")
         for file in successful_processing:
             print(f"  ✓ {file}")
     
     if failed_processing:
-        print(f"\nFailed to process ({len(failed_processing)}):")
+        print(f"\nFailed to process:")
         for file in failed_processing:
             print(f"  ✗ {file}")
-    
-    # Summary statistics using PARSING
-    if all_parsed_results:
-        total_high = sum(result['overall_counts']['high'] for result in all_parsed_results)
-        total_medium = sum(result['overall_counts']['medium'] for result in all_parsed_results)
-        total_low = sum(result['overall_counts']['low'] for result in all_parsed_results)
-        total_flags = sum(result['overall_counts']['total'] for result in all_parsed_results)
-        
-        print(f"\nOVERALL STATISTICS (using PARSING):")
-        print(f"Total High Risk Flags: {total_high}")
-        print(f"Total Medium Risk Flags: {total_medium}")
-        print(f"Total Low Risk Flags: {total_low}")
-        print(f"Total Risk Flags: {total_flags}")
 
-def main_batch_processing_five_iterations_with_parsing():
+def main_batch_processing_five_iterations():
     """
-    Main function to run the enhanced pipeline with PARSING instead of LLM for counting
+    Main function - same as original but with parsing integration
     """
     
     pdf_folder_path = r"pdf_KEC"
     queries_csv_path = r"EWS_prompts_v2.xlsx"       
-    output_folder = r"KEC_result_5iterations_with_parsing"
+    output_folder = r"KEC_result_5iterations"
     
     previous_year_data = """
 Parameter	Mar-23	Unit
@@ -1142,7 +976,7 @@ Previous reported cash balance	344	Cr
 Previous reported current liabilities	14,209	Cr
 """
 
-    run_multiple_pdfs_five_iterations_pipeline_with_parsing(
+    run_multiple_pdfs_five_iterations_pipeline(
         pdf_folder_path=pdf_folder_path,
         queries_csv_path=queries_csv_path,
         previous_year_data=previous_year_data,
@@ -1150,4 +984,4 @@ Previous reported current liabilities	14,209	Cr
     )
 
 if __name__ == "__main__":
-    main_batch_processing_five_iterations_with_parsing()
+    main_batch_processing_five_iterations()
