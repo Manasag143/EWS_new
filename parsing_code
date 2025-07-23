@@ -37,7 +37,7 @@ def parse_risk_classification_response(response_text: str) -> Dict:
     count_medium = 0  
     count_low = 0
     
-    # Only store HIGH RISK summaries
+    # Only store HIGH RISK summaries (without category)
     high_summaries = []
     
     # Split response into lines
@@ -46,17 +46,11 @@ def parse_risk_classification_response(response_text: str) -> Dict:
     
     # Track current red flag summary
     current_summary = ""
-    current_category = ""
     
     for idx, line in enumerate(output_lines):
         line = line.strip()
         original_line = original_lines[idx].strip() if idx < len(original_lines) else ""
         
-        # Detect category headers
-        if line.startswith("###") and "risk classification" in line:
-            current_category = line.replace("###", "").replace("risk classification", "").strip()
-            continue
-            
         # Detect red flag summary (lines starting with * or •)
         if line.startswith("*") or line.startswith("•"):
             # Extract summary (remove bullet point and get text until risk classification)
@@ -68,12 +62,9 @@ def parse_risk_classification_response(response_text: str) -> Dict:
         # Check for risk level classifications and count them
         if "high:" in line and "yes" in line:
             count_high += 1
-            # Only store summary for HIGH RISK
+            # Only store summary for HIGH RISK (without category)
             if current_summary:
-                high_summaries.append({
-                    'category': current_category,
-                    'summary': current_summary
-                })
+                high_summaries.append(current_summary)
                 
         elif "medium:" in line and "yes" in line:
             count_medium += 1
@@ -414,7 +405,7 @@ Answer:"""
 def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
     """
     Process a single PDF through the 5-iteration pipeline including risk classification
-    Uses parsing instead of LLM for counting and summary extraction in 5th iteration
+    Now uses parsing instead of LLM for counting and summary extraction
     """
     
     # Create output folder if it doesn't exist
@@ -735,12 +726,11 @@ Answer:"""
         risk_output_file = os.path.join(output_folder, f"{pdf_name}_risk_classification.csv")
         risk_df.to_csv(risk_output_file, index=False)
         
-        # Create enhanced Word document with specific structure requested
+        # Create Word document with your requested format
         try:
             from docx import Document
             from docx.shared import Inches
             from docx.enum.text import WD_ALIGN_PARAGRAPH
-            from docx.shared import RGBColor
             
             doc = Document()
             
@@ -789,10 +779,9 @@ Answer:"""
             
             # High Risk Details
             if parsed_data['high_risk_summaries']:
-                for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
+                for i, summary in enumerate(parsed_data['high_risk_summaries'], 1):
                     para = doc.add_paragraph()
-                    para.add_run(f'{i}. Category: {risk_item["category"]}\n').bold = True
-                    para.add_run(f'Summary: {risk_item["summary"]}\n')
+                    para.add_run(f'{i}. {summary}')
                     doc.add_paragraph()  # Add spacing
             else:
                 doc.add_paragraph('No high-risk flags identified.')
@@ -801,7 +790,6 @@ Answer:"""
             separator_para = doc.add_paragraph()
             separator_run = separator_para.add_run('_' * 80)
             separator_run.bold = True
-            separator_run.font.size = Inches(0.2)
             
             # Add spacing after separator
             doc.add_paragraph()
@@ -838,9 +826,8 @@ HIGH RISK FLAGS:
 """
             
             if parsed_data['high_risk_summaries']:
-                for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
-                    word_content += f"{i}. Category: {risk_item['category']}\n"
-                    word_content += f"   Summary: {risk_item['summary']}\n\n"
+                for i, summary in enumerate(parsed_data['high_risk_summaries'], 1):
+                    word_content += f"{i}. {summary}\n\n"
             else:
                 word_content += "No high-risk flags identified.\n\n"
             
@@ -863,17 +850,17 @@ SUMMARY
         print(f"Results saved to: {complete_output_file}")
         print(f"Risk classification saved to: {risk_output_file}")
         
-        # Print parsed results
-        print(f"\nRisk Flag Counts (using parsing):")
+        # Print parsed results (using parsing instead of LLM)
+        print(f"\nRisk Flag Counts (extracted using parsing):")
         print(f"High Risk: {parsed_data['high_count']}")
         print(f"Medium Risk: {parsed_data['medium_count']}")
         print(f"Low Risk: {parsed_data['low_count']}")
         print(f"Total: {parsed_data['total_count']}")
         
         if parsed_data['high_risk_summaries']:
-            print(f"\nHigh Risk Summaries:")
-            for i, risk_item in enumerate(parsed_data['high_risk_summaries'], 1):
-                print(f"{i}. [{risk_item['category']}] {risk_item['summary']}")
+            print(f"\nHigh Risk Summaries (extracted using parsing):")
+            for i, summary in enumerate(parsed_data['high_risk_summaries'], 1):
+                print(f"{i}. {summary}")
         
         return all_results
         
@@ -892,7 +879,7 @@ SUMMARY
 def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
     """
     Process multiple PDFs from a folder through the 5-iteration pipeline including risk classification
-    Same as original but uses parsing for risk flag counting and summary extraction
+    Now uses parsing instead of LLM for counting and summary extraction
     
     Args:
         pdf_folder_path: Path to folder containing PDF files
@@ -955,7 +942,7 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
 
 def main_batch_processing_five_iterations():
     """
-    Main function - same as original but with parsing integration
+    Main function - same as original but now uses parsing for counting and summary extraction
     """
     
     pdf_folder_path = r"pdf_KEC"
