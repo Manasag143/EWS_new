@@ -1,7 +1,7 @@
 def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
     """
-    Process a single PDF through the 5-iteration pipeline including risk classification
-    Modified to use 2nd iteration results for flag distribution in 5th iteration
+    Process a single PDF through the 5-iteration pipeline with enhanced LLM-based flag classification
+    Uses multiple LLM calls for better flag selection and classification accuracy
     """
    
     # Create output folder if it doesn't exist
@@ -167,8 +167,8 @@ Continue this format for all categories, ensuring every red flag from the previo
        
         fourth_response = pipeline_1st.llm._call(fourth_full_prompt)
        
-        # ITERATION 5: Risk Classification
-        print("Running 5th iteration - Risk Classification...")
+        # ENHANCED ITERATION 5: Multi-step LLM-based Risk Classification
+        print("Running 5th iteration - Enhanced LLM-based Risk Classification...")
        
         # Define risk criteria for each category
         risk_criteria = {
@@ -203,14 +203,57 @@ Continue this format for all categories, ensuring every red flag from the previo
             }
         }
        
-        # Process each category for risk classification
-        fifth_results = []
+        # STEP 5A: LLM-based Flag Extraction per Category
+        print("Step 5A: Extracting flags per category using LLM...")
+        extracted_flags_by_category = {}
         categories = ["Balance Sheet Issues", "P&L (Income Statement) Issues", "Liquidity Issues",
                      "Management and Strategy related Issues", "Regulatory Issues",
                      "Industry and Market Issues", "Operational Issues"]
        
         for category in categories:
+            extraction_prompt = f"""
+You are a financial analyst. From the categorized red flags provided, extract ONLY the red flags that belong to the "{category}" category.
+
+Categorized Red Flags:
+{third_response}
+
+Instructions:
+1. Look specifically for the section "### {category}"
+2. Extract each red flag listed under this category
+3. Maintain the exact original format and content
+4. If no flags exist for this category, respond with "No flags found for this category"
+
+Output Format:
+List each red flag exactly as it appears under the {category} section, one per line:
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+- [Red flag 3 with original quote]
+"""
+           
+            extraction_full_prompt = f"""You must answer the question strictly based on the below given context.
+ 
+Context:
+{pipeline_1st.docs[0]["context"]}
+ 
+Categorized Analysis: {third_response}
+ 
+Based on the above categorized analysis, please answer: {extraction_prompt}
+ 
+Answer:"""
+           
+            extracted_flags = pipeline_1st.llm._call(extraction_full_prompt)
+            extracted_flags_by_category[category] = extracted_flags
+            print(f"Extracted flags for {category}")
+       
+        # STEP 5B: LLM-based Risk Classification per Category
+        print("Step 5B: Classifying risk levels using LLM...")
+        fifth_results = []
+       
+        for category in categories:
             print(f"Classifying risk for: {category}")
+           
+            # Get extracted flags for this category
+            category_flags = extracted_flags_by_category[category]
            
             # Create category-specific prompt
             category_criteria = risk_criteria.get(category, {})
@@ -218,75 +261,112 @@ Continue this format for all categories, ensuring every red flag from the previo
             for criteria_name, criteria_desc in category_criteria.items():
                 criteria_text += f"{criteria_name}: {criteria_desc}\n"
            
-            # MODIFIED: Use second_response (deduplicated) instead of fourth_response for risk classification
-            fifth_prompt = f"""
-           
-You are a financial risk analyst. Based on the red flags provided and the previous year's financial data, classify each red flag in the {category} category into High, Medium, Low, or Not_Applicable risk levels.
+            classification_prompt = f"""
+You are a financial risk analyst. Classify each red flag in the {category} category into High, Medium, Low, or Not_Applicable risk levels.
  
 Criteria for {category}:
 {criteria_text}
  
-Red flags to classify (from deduplicated analysis):
-{second_response}
+Red flags to classify for {category}:
+{category_flags}
  
 Previous Year Financial Data:
 {previous_year_data}
  
-For each red flag found in {category}, analyze it against the criteria and classify the risk level.
+Instructions:
+1. Analyze each red flag against the specific criteria for {category}
+2. Compare with previous year data where applicable
+3. Assign exactly ONE risk level (High/Medium/Low/Not_Applicable) to each flag
+4. Provide brief reasoning for each classification
  
 Output Format:
 ### {category} Risk Classification
  
-For each red flag found in {category}:
-* [Red flag summary]
-  - High: yes/no
-  - Medium: yes/no
-  - Low: yes/no
-  - Not_Applicable: yes/no
+Flag 1: [Brief description of the flag]
+Risk Level: High/Medium/Low/Not_Applicable
+Reasoning: [Brief explanation based on criteria and data]
  
-If no red flags exist in this category, state: "No red flags present in this category."
+Flag 2: [Brief description of the flag]
+Risk Level: High/Medium/Low/Not_Applicable
+Reasoning: [Brief explanation based on criteria and data]
  
-IMPORTANT: Provide ONLY yes/no answers without any explanations or additional text after yes/no.
+Continue for all flags in this category.
  
-Analysis should be based on:
-1. Quantitative thresholds mentioned in the criteria
-2. Comparison with previous year data provided
-3. Qualitative assessment of the described issues
- 
+If no flags exist in this category, state: "No red flags present in this category."
 """
            
-            fifth_full_prompt = f"""You must answer the question strictly based on the below given context.
+            classification_full_prompt = f"""You must answer the question strictly based on the below given context.
  
 Context:
 {pipeline_1st.docs[0]["context"]}
  
-Previous Analysis: {second_response}
+Category Flags: {category_flags}
  
-Based on the above analysis and the original context, please answer: {fifth_prompt}
+Previous Year Data: {previous_year_data}
+ 
+Based on the above information, please answer: {classification_prompt}
  
 Answer:"""
            
-            category_response = pipeline_1st.llm._call(fifth_full_prompt)
+            category_response = pipeline_1st.llm._call(classification_full_prompt)
             fifth_results.append({
                 "category": category,
+                "extracted_flags": category_flags,
                 "risk_classification": category_response
             })
        
-        # Combine all risk classifications
-        combined_fifth_response = ""
+        # STEP 5C: LLM-based Flag Count and High Risk Summary
+        print("Step 5C: Counting flags and summarizing high risks using LLM...")
+       
+        # Combine all classifications for counting
+        all_classifications = ""
         for result in fifth_results:
-            combined_fifth_response += f"\n{result['risk_classification']}\n"
+            all_classifications += f"\n{result['risk_classification']}\n"
+       
+        counting_prompt = f"""
+You are a data analyst. From the risk classifications provided, count the total number of flags at each risk level and extract summaries of HIGH RISK flags only.
+ 
+Risk Classifications:
+{all_classifications}
+ 
+Instructions:
+1. Count total flags at each level: High, Medium, Low, Not_Applicable
+2. For HIGH RISK flags only, extract a brief summary (without the risk level label)
+3. Be precise in counting - count each distinct flag only once
+ 
+Output Format:
+COUNTS:
+High: [number]
+Medium: [number]  
+Low: [number]
+Not_Applicable: [number]
+ 
+HIGH RISK SUMMARIES:
+- [Summary of high risk flag 1]
+- [Summary of high risk flag 2]
+- [Summary of high risk flag 3]
+ 
+If no high risk flags exist, state: "No high risk flags identified"
+"""
+       
+        counting_full_prompt = f"""Based on the risk classifications provided, please answer: {counting_prompt}
+ 
+Risk Classifications:
+{all_classifications}
+ 
+Answer:"""
+       
+        counting_response = pipeline_1st.llm._call(counting_full_prompt)
+       
+        # Parse the counting response to extract structured data
+        risk_data = parse_llm_counting_response(counting_response)
        
         # Extract company information from first page
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
        
-        # Parse risk data using parsing method (INSTEAD OF LLM)
-        print("Parsing risk flags using parsing technique instead of LLM...")
-        risk_data = parse_risk_classification_response(combined_fifth_response)
-       
-        # Parse summary by categories (still use 4th iteration for summary in Word doc)
+        # Parse summary by categories (use 4th iteration for summary in Word doc)
         print("Parsing summary by categories...")
         summary_by_categories = parse_summary_by_categories(fourth_response)
        
@@ -303,46 +383,52 @@ Answer:"""
         # Save all results together
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         all_results = pd.DataFrame({
-            "pdf_name": [pdf_name, pdf_name, pdf_name, pdf_name, pdf_name],
-            "iteration": [1, 2, 3, 4, 5],
+            "pdf_name": [pdf_name, pdf_name, pdf_name, pdf_name, pdf_name, pdf_name, pdf_name],
+            "iteration": [1, 2, 3, 4, "5A", "5B", "5C"],
             "stage": [
                 "Initial Analysis",
-                "Deduplication",
+                "Deduplication", 
                 "Categorization",
                 "Summary Generation",
-                "Risk Classification (using 2nd iteration)"
+                "Flag Extraction by Category",
+                "Risk Classification by Category",
+                "Flag Counting and High Risk Summary"
             ],
             "prompt": [
-                first_results_df.iloc[0]['query'],  # Original query from 1st iteration
+                first_results_df.iloc[0]['query'],
                 second_prompt,
                 third_prompt,
                 fourth_prompt,
-                "Risk Classification for all categories (using deduplicated flags)"
+                "Extract flags per category",
+                "Classify risk levels per category",
+                "Count flags and summarize high risks"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                combined_fifth_response
+                str(extracted_flags_by_category),
+                all_classifications,
+                counting_response
             ],
-            "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
+            "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp]
         })
        
         # Save complete results
-        complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_5iteration_pipeline_results.csv")
+        complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_enhanced_pipeline_results.csv")
         all_results.to_csv(complete_output_file, index=False)
        
-        # Save individual risk classification results
+        # Save detailed risk classification results
         risk_df = pd.DataFrame(fifth_results)
-        risk_output_file = os.path.join(output_folder, f"{pdf_name}_risk_classification.csv")
+        risk_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_risk_classification.csv")
         risk_df.to_csv(risk_output_file, index=False)
        
-        print(f"Complete 5-iteration pipeline finished for {pdf_name}!")
+        print(f"Complete enhanced pipeline finished for {pdf_name}!")
         print(f"CSV Results saved to: {complete_output_file}")
         print(f"Risk classification saved to: {risk_output_file}")
         print(f"Word document saved to: {word_doc_path}")
-        print(f"NOTE: Flag distribution now based on 2nd iteration (deduplicated) results")
+        print(f"NOTE: Used enhanced LLM-based approach with {len(categories) + 2} additional LLM calls for better accuracy")
        
         return all_results
        
@@ -357,3 +443,54 @@ Answer:"""
         error_file = os.path.join(output_folder, f"{pdf_name}_error_log.csv")
         error_df.to_csv(error_file, index=False)
         return None
+
+def parse_llm_counting_response(counting_response: str) -> Dict:
+    """
+    Parse the LLM counting response to extract flag counts and high risk summaries
+    """
+    
+    # Initialize default values
+    counts = {'High': 0, 'Medium': 0, 'Low': 0, 'Not_Applicable': 0}
+    high_summaries = []
+    
+    lines = counting_response.split('\n')
+    in_counts_section = False
+    in_summaries_section = False
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Check for section headers
+        if 'COUNTS:' in line.upper():
+            in_counts_section = True
+            in_summaries_section = False
+            continue
+        elif 'HIGH RISK SUMMARIES:' in line.upper():
+            in_counts_section = False
+            in_summaries_section = True
+            continue
+        
+        # Parse counts
+        if in_counts_section and ':' in line:
+            parts = line.split(':')
+            if len(parts) == 2:
+                risk_level = parts[0].strip()
+                try:
+                    count = int(parts[1].strip())
+                    if risk_level in counts:
+                        counts[risk_level] = count
+                except ValueError:
+                    pass
+        
+        # Parse high risk summaries
+        if in_summaries_section and line.startswith('-'):
+            summary = line[1:].strip()  # Remove the dash
+            if summary and not summary.lower().startswith('no high risk'):
+                high_summaries.append(summary)
+    
+    return {
+        'High': high_summaries,
+        'Medium': [],
+        'Low': [],
+        'counts': counts
+    }
