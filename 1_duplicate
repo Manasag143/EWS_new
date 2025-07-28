@@ -1426,3 +1426,94 @@ Previous reported current liabilities	 1,071 Cr	Mar-24
  
 if __name__ == "__main__":
     main_batch_processing_five_iterations()
+
+
+
+def evaluate_individual_criteria(llm, context: str, fourth_response: str, previous_year_data: str, criteria_name: str, criteria_description: str) -> str:
+    """
+    Evaluate a single risk criterion with targeted prompts,
+    explicitly instructing the LLM to remove duplicates in the high risk summary.
+    
+    Args:
+        llm: AzureOpenAILLM instance for LLM calls
+        context: Full document context text
+        fourth_response: Summary text from the 4th iteration
+        previous_year_data: Previous year financial data string for reference
+        criteria_name: Name of the criterion (e.g., "debt_increase")
+        criteria_description: Description of the risk classification logic
+    
+    Returns:
+        LLM response string for this criterion's classification
+    """
+    
+    specific_prompts = {
+        # Example for one criterion; add others similarly
+        "debt_increase": f"""
+Analyze ONLY debt-related red flags from the summary. Look specifically for:
+- Total debt increases
+- Long-term debt changes
+- Borrowing increases
+- Debt restructuring issues
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention debt increases or borrowing increases. Ignore margin issues, revenue declines, or operational problems.
+
+Output Format:
+### Debt Increase Risk Classification
+* [Only debt increase related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no debt increase red flags found, state: "No debt increase red flags present."
+""",
+        # Add similar entries for other criteria here...
+    }
+    
+    # === DEDUPLICATION INSTRUCTIONS ADDED HERE ===
+    dedup_instruction = (
+        "REMOVE ALL DUPLICATES: Report each distinct high risk flag only once (do not include repetitive or paraphrased statements). "
+        "If multiple flags describe the same underlying issue, only include the most representative one."
+    )
+    
+    if criteria_name in specific_prompts:
+        specific_prompt = specific_prompts[criteria_name].rstrip() + f"\n\n{dedup_instruction}\n"
+    else:
+        specific_prompt = f"""
+Analyze red flags related to {criteria_name} from the summary.
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+{dedup_instruction}
+
+Output Format:
+### {criteria_name.title()} Risk Classification
+* [Only {criteria_name} related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no {criteria_name} red flags found, state: "No {criteria_name} red flags present."
+"""
+    
+    full_prompt = f"""You must answer the question strictly based on the below given context.
+
+Context:
+{context}
+
+Summary from previous iteration:
+{fourth_response}
+
+Based on the above context and analysis, please answer: {specific_prompt}
+
+Answer:"""
+    
+    # Call the LLM with the prepared prompt
+    return llm._call(full_prompt, max_tokens=1000)
