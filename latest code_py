@@ -2,12 +2,10 @@ import os
 import time
 import pandas as pd
 import fitz  
-import requests
 import warnings
 import hashlib
 import logging
 import json
-import ast
 from typing import Dict, List, Any
 import glob
 from pathlib import Path
@@ -16,6 +14,8 @@ from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.shared import OxmlElement, qn
 import re
+from openai import AzureOpenAI
+import httpx
  
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.INFO)
@@ -26,58 +26,61 @@ def getFilehash(file_path: str):
     with open(file_path, 'rb') as f:
         return hashlib.sha3_256(f.read()).hexdigest()
  
-class HostedLLM:
-    """Custom LLM class for hosted Llama model"""
+class AzureOpenAILLM:
+    """Azure OpenAI GPT-4.1-mini LLM class"""
    
-    def __init__(self, endpoint: str):
-        self.endpoint = endpoint
+    def __init__(self, api_key: str, azure_endpoint: str, api_version: str, deployment_name: str = "gpt-4.1-mini"):
+        """
+        Initialize Azure OpenAI client
+        
+        Args:
+            api_key: Your Azure OpenAI API key
+            azure_endpoint: Your Azure OpenAI endpoint URL
+            api_version: API version (e.g., "2024-02-01")
+            deployment_name: Your deployment name (default: "gpt-4.1-mini")
+        """
+        self.deployment_name = deployment_name
+        
+        # Create httpx client with SSL verification disabled (if needed)
+        httpx_client = httpx.Client(verify=False)
+        
+        # Initialize Azure OpenAI client
+        self.client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            http_client=httpx_client
+        )
    
-    def _call(self, prompt: str) -> str:
-        """Make API call to hosted LLM"""
+    def _call(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Make API call to Azure OpenAI GPT-4.1-mini"""
         try:
-            prompt_template = f"""<|begin_of_text|><|start_header_id|>user<|end_header_id|>
-{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-"""
-           
-            payload = json.dumps({
-                "provider": "tgi",
-                "deployment": "Llama 3.3 v1",
-                "spec_version": 1,
-                "input_text": prompt_template,
-                "params": {"temperature": 0.1}
-            })
-           
-            headers = {
-                'token': '0e53d2cf9f724a94a6ca0a9c880fdee7',
-                'Content-Type': 'application/json'
-            }
-           
-            response = requests.post(
-                url="https://llmgateway.crisil.local/api/v1/llm",
-                headers=headers,
-                data=payload,
-                verify=False
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=0.95,
+                frequency_penalty=0,
+                presence_penalty=0
             )
+            
+            # Extract the response text
+            response_text = response.choices[0].message.content
+            
+            # Log token usage
+            if hasattr(response, 'usage'):
+                logger.info(f"Tokens used - Prompt: {response.usage.prompt_tokens}, "
+                          f"Completion: {response.usage.completion_tokens}, "
+                          f"Total: {response.usage.total_tokens}")
+            
+            return response_text.strip() if response_text else ""
            
-            print(f"Response Status: {response.status_code}")
-            print(f"Response Text: {response.text[:500]}...")  # First 500 chars
-           
-            if response.status_code != 200:
-                return f"LLM Call Failed: HTTP {response.status_code} - {response.text}"
-           
-            response_v = ast.literal_eval(response.text)
-            resp_o = response_v['output']
-            output = str(resp_o).replace(prompt_template, "")
-            return output.strip()
-           
-        except requests.exceptions.RequestException as e:
-            return f"LLM Call Failed - Network Error: {e}"
-        except json.JSONDecodeError as e:
-            return f"LLM Call Failed - JSON Error: {e}"
-        except KeyError as e:
-            return f"LLM Call Failed - Missing Key: {e}"
         except Exception as e:
-            return f"LLM Call Failed - General Error: {e}"
+            logger.error(f"Azure OpenAI API call failed: {str(e)}")
+            return f"Azure OpenAI Call Failed: {str(e)}"
  
 class PDFExtractor:
     """Class for extracting text from PDF files"""
@@ -118,11 +121,32 @@ def mergeDocs(pdf_path: str, split_pages: bool = False) -> List[Dict[str, Any]]:
         return [{"context": all_text}]
  
 class LlamaQueryPipeline:
-    """Main pipeline class for querying PDF content with Llama"""
+    """Main pipeline class for querying PDF content with Azure OpenAI GPT-4.1-mini"""
    
-    def __init__(self, pdf_path: str, queries_csv_path: str = None, llm_endpoint: str = "https://llmgateway.crisil.local/api/v1/llm", previous_results_path: str = None):
-        """Initialize the pipeline"""
-        self.llm = HostedLLM(endpoint=llm_endpoint)
+    def __init__(self, pdf_path: str, queries_csv_path: str = None, 
+                 api_key: str = None, azure_endpoint: str = None, 
+                 api_version: str = None, deployment_name: str = "gpt-4.1-mini",
+                 previous_results_path: str = None):
+        """
+        Initialize the pipeline with Azure OpenAI
+        
+        Args:
+            pdf_path: Path to PDF file
+            queries_csv_path: Path to queries CSV/Excel file
+            api_key: Azure OpenAI API key
+            azure_endpoint: Azure OpenAI endpoint
+            api_version: API version
+            deployment_name: Deployment name
+            previous_results_path: Path to previous results
+        """
+        # Initialize Azure OpenAI LLM
+        self.llm = AzureOpenAILLM(
+            api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"), 
+            api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            deployment_name=deployment_name
+        )
+        
         self.docs = mergeDocs(pdf_path, split_pages=False)
        
         # Load queries from Excel or CSV (only if provided)
@@ -144,7 +168,7 @@ class LlamaQueryPipeline:
             self.previous_results = pd.read_csv(previous_results_path)
    
     def query_llama_with_chaining(self, new_queries_csv_path: str, iteration_number: int = 2) -> pd.DataFrame:
-        """Query the Llama API using previous results for chaining"""
+        """Query the Azure OpenAI API using previous results for chaining"""
         if self.previous_results is None:
             raise ValueError("No previous results loaded. Please provide previous_results_path in __init__")
        
@@ -191,11 +215,11 @@ Answer:"""
                
                 full_prompt = f"{sys_prompt}\n{chained_prompt}"
                
-                # Get response from Llama
-                response_text = self.llm._call(full_prompt)
+                # Get response from Azure OpenAI
+                response_text = self.llm._call(full_prompt, max_tokens=4000)
                 end = time.perf_counter()
                
-                # Calculate token approximations
+                # Calculate token approximations (more accurate with OpenAI response)
                 input_tokens = len(full_prompt.split())
                 completion_tokens = len(response_text.split()) if response_text else 0
                
@@ -231,7 +255,7 @@ Answer:"""
         return pd.DataFrame(results)
  
     def query_llama(self, maintain_conversation: bool = True, enable_chaining: bool = False) -> pd.DataFrame:
-        """Query the Llama API for a list of queries using the provided context"""
+        """Query the Azure OpenAI API for a list of queries using the provided context"""
         sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
  
 COMPLETE DOCUMENT TO ANALYZE:
@@ -294,7 +318,8 @@ Answer:"""
                 else:
                     full_prompt = f"{sys_prompt}\n{prompt_template.format(query=chained_query)}"
                
-                response_text = self.llm._call(full_prompt)
+                # Use higher max_tokens for comprehensive analysis
+                response_text = self.llm._call(full_prompt, max_tokens=4000)
                 end = time.perf_counter()
                
                 input_tokens = len(full_prompt.split())
@@ -343,12 +368,12 @@ Answer:"""
         if output_path is None:
             # Generate filename based on PDF name and timestamp
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_path = f"llama_query_results_{self.pdf_name}_{timestamp}.csv"
+            output_path = f"azure_openai_query_results_{self.pdf_name}_{timestamp}.csv"
        
         results_df.to_csv(output_path, index=False)
         return output_path
  
-def extract_company_info_from_pdf(pdf_path: str, llm: HostedLLM) -> str:
+def extract_company_info_from_pdf(pdf_path: str, llm: AzureOpenAILLM) -> str:
     """Extract company name, quarter, and financial year from first page of PDF"""
     try:
         doc = fitz.open(pdf_path)
@@ -376,7 +401,7 @@ If you cannot find clear information, make the best estimate based on available 
  
 Response:"""
        
-        response = llm._call(prompt)
+        response = llm._call(prompt, max_tokens=200)
         # Clean the response to get just the formatted string
         response_lines = response.strip().split('\n')
         for line in response_lines:
@@ -390,6 +415,7 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
+# [Keep the same parsing functions as they don't need changes]
 def parse_risk_classification_response(response_text: str) -> Dict:
     """
     Parse the 5th iteration response to extract risk flag counts and HIGH RISK summaries
@@ -574,7 +600,7 @@ def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, 
    
     return doc_path
 
-def evaluate_individual_criteria(llm: HostedLLM, context: str, fourth_response: str, previous_year_data: str, criteria_name: str, criteria_description: str) -> str:
+def evaluate_individual_criteria(llm: AzureOpenAILLM, context: str, fourth_response: str, previous_year_data: str, criteria_name: str, criteria_description: str) -> str:
     """
     Evaluate a single criterion with specific targeted prompts to avoid over-counting
     """
@@ -975,11 +1001,14 @@ Based on the above context and analysis, please answer: {specific_prompt}
 
 Answer:"""
     
-    return llm._call(full_prompt)
+    return llm._call(full_prompt, max_tokens=1000)
 
-def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+                                     output_folder: str = "results", 
+                                     api_key: str = None, azure_endpoint: str = None, 
+                                     api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process a single PDF through the 5-iteration pipeline with individual criteria evaluation
+    Process a single PDF through the 5-iteration pipeline with individual criteria evaluation using Azure OpenAI
     """
    
     # Create output folder if it doesn't exist
@@ -996,7 +1025,11 @@ def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, pre
         print("Running 1st iteration - Initial Analysis...")
         pipeline_1st = LlamaQueryPipeline(
             pdf_path=pdf_path,
-            queries_csv_path=queries_csv_path
+            queries_csv_path=queries_csv_path,
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            deployment_name=deployment_name
         )
        
         # Run 1st iteration
@@ -1020,7 +1053,7 @@ Based on the above analysis and the original context, please answer: {second_pro
  
 Answer:"""
        
-        second_response = pipeline_1st.llm._call(second_full_prompt)
+        second_response = pipeline_1st.llm._call(second_full_prompt, max_tokens=4000)
        
         # ITERATION 3: Categorization of red flags
         print("Running 3rd iteration - Categorization...")
@@ -1083,7 +1116,7 @@ Based on the above analysis and the original context, please answer: {third_prom
  
 Answer:"""
        
-        third_response = pipeline_1st.llm._call(third_full_prompt)
+        third_response = pipeline_1st.llm._call(third_full_prompt, max_tokens=4000)
        
         # ITERATION 4: Detailed summary generation
         print("Running 4th iteration - Summary Generation...")
@@ -1143,12 +1176,11 @@ Based on the above analysis and the original context, please answer: {fourth_pro
  
 Answer:"""
        
-        fourth_response = pipeline_1st.llm._call(fourth_full_prompt)
+        fourth_response = pipeline_1st.llm._call(fourth_full_prompt, max_tokens=4000)
        
         # ITERATION 5: Individual Risk Classification for 15 Criteria
         print("Running 5th iteration - Individual Criteria Risk Classification...")
        
-        # Define 15 individual criteria with specific prompts
         criteria_definitions = {
             "debt_increase": "High: Debt increase by >=40% compared to previous reported b/s number; Medium: Debt increase between 25 to 40% compared to previous reported b/s number; Low: Debt increase is less than 25% compared to previous reported b/s number",
             "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Medium: provisioning or write-offs between 10 to 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 10% of current quarter's EBIDTA",
@@ -1156,16 +1188,17 @@ Answer:"""
             "receivable_days": "High: receivable days increase by >=40% compared to previous reported b/s number; Medium: receivable days increase between 25 to 40% compared to previous reported b/s number; Low: receivable days increase is less than 25% compared to previous reported b/s number",
             "payable_days": "High: payable days increase by >=40% compared to previous reported b/s number; Medium: payable days increase between 25 to 40% compared to previous reported b/s number; Low: payable days increase is less than 25% compared to previous reported b/s number",
             "debt_ebitda": "High: Debt/EBITDA > 4x; Medium: Debt/EBITDA 2-4x; Low: Debt/EBITDA < 2x",
-            "revenue_decline": "High: revenue or profitability falls by >=40% compared to previous reported quarter number; Medium: revenue or profitability falls between 25% to 40% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
+            "revenue_decline": "High: revenue or profitability falls by >=25% compared to previous reported quarter number; Medium: revenue or profitability falls between 10% to 25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 10% compared to previous reported quarter number",
             "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Medium: one-time expenses or losses between 10 to 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 10% of current quarter's EBIDTA",
             "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Medium: gross margin or operating margin falling between 10 to 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 10% compared to previous reported quarter number",
             "cash_balance": "High: cash balance falling more than 25% compared to previous reported b/s number; Medium: cash balance falling between 10 to 25% compared to previous reported b/s number; Low: cash balance falling less than 10% compared to previous reported b/s number",
             "short_term_debt": "High: Short-term debt or current liabilities increase by >=40% compared to previous reported b/s number; Medium: Short-term debt or current liabilities increase between 25 to 40% compared to previous reported b/s number; Low: Short-term debt or current liabilities increase is less than 25% compared to previous reported b/s number",
-            "management_issues": "High: High management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates; Medium: Some management turnover or key personnel departures, Some concerns around execution or delivery, Moderate employee attrition rates; Low: Low management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates",
-            "regulatory_compliance": "High: Material non-compliance with regulations or laws, Repeated regulatory issues or warnings; Medium: Some non-compliance with regulations or laws, Some regulatory issues or warnings; Low: No material non-compliance with regulations or laws, No regulatory issues or warnings",
-            "market_competition": "High: High competitive intensity or new entrants, Material decline in market share; Medium: Some competitive intensity or new entrants, Some decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: Material disruptions to operations or supply chain, Significant IT or system failures; Medium: Some disruptions to operations or supply chain, Some IT or system failures; Low: No Material disruptions to operations or supply chain, No significant IT or system failures"
+            "management_issues": "High: Any management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates; Low: No management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates",
+            "regulatory_compliance": "High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators ;Low: if there is a no clear concern for the company basis the discussion on the regulatory issues ",
+            "market_competition": "High: Any competitive intensity or new entrants, Any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
+            "operational_disruptions": "High: : if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues ; Low: if there is a no clear concern for the company basis the discussion on the operational or supply chain issues "
         }
+
         
         # Process each criterion individually
         fifth_results = []
@@ -1277,15 +1310,22 @@ Answer:"""
         error_df.to_csv(error_file, index=False)
         return None
  
-def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, output_folder: str = "results"):
+def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, 
+                                              output_folder: str = "results",
+                                              api_key: str = None, azure_endpoint: str = None, 
+                                              api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process multiple PDFs from a folder through the 5-iteration pipeline with individual criteria evaluation
+    Process multiple PDFs from a folder through the 5-iteration pipeline with individual criteria evaluation using Azure OpenAI
    
     Args:
         pdf_folder_path: Path to folder containing PDF files
         queries_csv_path: Path to CSV/Excel file containing queries
         previous_year_data: String containing previous year financial data
         output_folder: Path to output folder for results
+        api_key: Azure OpenAI API key
+        azure_endpoint: Azure OpenAI endpoint
+        api_version: API version
+        deployment_name: Deployment name
     """
    
     # Create output folder if it doesn't exist
@@ -1302,7 +1342,7 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
     for pdf_file in pdf_files:
         print(f"  - {os.path.basename(pdf_file)}")
    
-    print(f"\nStarting batch processing with 5 iterations and 15 individual criteria...")
+    print(f"\nStarting batch processing with 5 iterations and 15 individual criteria using Azure OpenAI GPT-4.1-mini...")
     print(f"Output folder: {output_folder}")
     print("=" * 60)
    
@@ -1318,7 +1358,11 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
                 pdf_path=pdf_file,
                 queries_csv_path=queries_csv_path,
                 previous_year_data=previous_year_data,
-                output_folder=output_folder
+                output_folder=output_folder,
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version,
+                deployment_name=deployment_name
             )
            
             if result is not None:
@@ -1339,12 +1383,37 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
         print(f"\nFailed to process:")
         for file in failed_processing:
             print(f"  ✗ {file}")
- 
+
 def main_batch_processing_five_iterations():
-   
+    """
+    Main function to run the batch processing with Azure OpenAI GPT-4.1-mini
+    Configure your Azure OpenAI credentials here
+    """
+    
+    # Configuration
     pdf_folder_path = r"ola_pdf"
     queries_csv_path = r"EWS_prompts_v2.xlsx"      
-    output_folder = r"ola_results_individual_criteria"
+    output_folder = r"ola_results_individual_criteria_azure_openai"
+    
+    # Azure OpenAI Configuration
+    # Method 1: Pass directly (replace with your actual values)
+    api_key = "your-azure-openai-api-key"
+    azure_endpoint = "https://your-resource-name.openai.azure.com/"
+    api_version = "2024-02-01"
+    deployment_name = "gpt-4.1-mini"
+    
+    # Method 2: Use environment variables (recommended)
+    # Set these environment variables in your system:
+    # export AZURE_OPENAI_API_KEY="your-api-key"
+    # export AZURE_OPENAI_ENDPOINT="https://your-resource-name.openai.azure.com/"
+    # export AZURE_OPENAI_API_VERSION="2024-02-01"
+    # export DEPLOYMENT_NAME="gpt-4.1-mini"
+    
+    # Uncomment to use environment variables:
+    # api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    # azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    # api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+    # deployment_name = os.getenv("DEPLOYMENT_NAME", "gpt-4.1-mini")
    
     # Previous year data - you can modify this for each company
     previous_year_data = """
@@ -1364,7 +1433,11 @@ Previous reported current liabilities	 1,071 Cr	Mar-24
         pdf_folder_path=pdf_folder_path,
         queries_csv_path=queries_csv_path,
         previous_year_data=previous_year_data,
-        output_folder=output_folder
+        output_folder=output_folder,
+        api_key=api_key,
+        azure_endpoint=azure_endpoint,
+        api_version=api_version,
+        deployment_name=deployment_name
     )
  
 if __name__ == "__main__":
