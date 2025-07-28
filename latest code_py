@@ -576,50 +576,402 @@ def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, 
 
 def evaluate_individual_criteria(llm: HostedLLM, context: str, fourth_response: str, previous_year_data: str, criteria_name: str, criteria_description: str) -> str:
     """
-    Evaluate a single criterion against the red flags and return classification results
+    Evaluate a single criterion with specific targeted prompts to avoid over-counting
     """
     
-    prompt = f"""
-You are a financial risk analyst. Based on the summary provided and the previous year's financial data, evaluate if any red flags meet the specific criterion: {criteria_name}.
+    # Define specific prompts for each criterion to be more targeted
+    specific_prompts = {
+        "debt_increase": f"""
+Analyze ONLY debt-related red flags from the summary. Look specifically for:
+- Total debt increases
+- Long-term debt changes
+- Borrowing increases
+- Debt restructuring issues
 
-Criterion Details:
-{criteria_description}
+Criterion: {criteria_description}
 
-Summary from previous iteration:
-{fourth_response}
+Previous Year Data: {previous_year_data}
 
-Previous Year Financial Data:
-{previous_year_data}
-
-Task: 
-1. Review ALL red flags from the summary
-2. Identify which red flags (if any) are related to {criteria_name}
-3. For each relevant red flag, classify it as High, Medium, Low, or Not_Applicable based on the criterion
+From the summary, identify ONLY red flags that specifically mention debt increases or borrowing increases. Ignore margin issues, revenue declines, or operational problems.
 
 Output Format:
-### {criteria_name} Risk Classification
-
-For each red flag that matches this criterion:
-* [Red flag summary]
+### Debt Increase Risk Classification
+* [Only debt increase related red flag if found]
   - High: yes/no
-  - Medium: yes/no  
+  - Medium: yes/no
   - Low: yes/no
   - Not_Applicable: yes/no
 
-If no red flags match this criterion, state: "No red flags present for this criterion."
+If no debt increase red flags found, state: "No debt increase red flags present."
+""",
+        
+        "provisioning": f"""
+Analyze ONLY provisioning and write-off related red flags from the summary. Look specifically for:
+- Provisioning for bad debts
+- Write-offs mentioned
+- Impairment charges
+- Credit loss provisions
 
-IMPORTANT: 
-- Provide ONLY yes/no answers without explanations
-- Base analysis on quantitative thresholds in the criterion and comparison with previous year data
-- Be precise in matching red flags to this specific criterion
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention provisioning, write-offs, or impairment. Ignore other financial issues.
+
+Output Format:
+### Provisioning Risk Classification
+* [Only provisioning/write-off related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no provisioning red flags found, state: "No provisioning red flags present."
+""",
+
+        "asset_decline": f"""
+Analyze ONLY asset value decline related red flags from the summary. Look specifically for:
+- Asset value decreases
+- Asset impairment
+- Fixed asset write-downs
+- Investment value declines
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention asset value declines or asset impairments. Ignore debt, revenue, or operational issues.
+
+Output Format:
+### Asset Decline Risk Classification
+* [Only asset decline related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no asset decline red flags found, state: "No asset decline red flags present."
+""",
+
+        "receivable_days": f"""
+Analyze ONLY receivable days or accounts receivable related red flags from the summary. Look specifically for:
+- Receivable days increase
+- Collection period extension
+- Accounts receivable growth
+- Customer payment delays
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention receivable days, collection periods, or accounts receivable issues.
+
+Output Format:
+### Receivable Days Risk Classification
+* [Only receivable days related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no receivable days red flags found, state: "No receivable days red flags present."
+""",
+
+        "payable_days": f"""
+Analyze ONLY payable days or accounts payable related red flags from the summary. Look specifically for:
+- Payable days increase
+- Payment period extension
+- Accounts payable growth
+- Supplier payment delays
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention payable days, payment periods, or accounts payable issues.
+
+Output Format:
+### Payable Days Risk Classification
+* [Only payable days related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no payable days red flags found, state: "No payable days red flags present."
+""",
+
+        "debt_ebitda": f"""
+Analyze ONLY debt-to-EBITDA ratio related red flags from the summary. Look specifically for:
+- Debt/EBITDA ratio mentions
+- High leverage concerns
+- Coverage ratio issues
+- Debt serviceability problems
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention debt-to-EBITDA ratios or leverage ratios.
+
+Output Format:
+### Debt EBITDA Risk Classification
+* [Only debt/EBITDA ratio related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no debt/EBITDA red flags found, state: "No debt/EBITDA red flags present."
+""",
+
+        "revenue_decline": f"""
+Analyze ONLY revenue decline related red flags from the summary. Look specifically for:
+- Revenue decreases
+- Sales decline
+- Top-line reduction
+- Income statement revenue issues
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention revenue declines or sales decreases. Ignore margin compression or cost issues.
+
+Output Format:
+### Revenue Decline Risk Classification
+* [Only revenue decline related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no revenue decline red flags found, state: "No revenue decline red flags present."
+""",
+
+        "onetime_expenses": f"""
+Analyze ONLY one-time expenses or exceptional items related red flags from the summary. Look specifically for:
+- One-time charges
+- Exceptional expenses
+- Non-recurring costs
+- Special items or extraordinary expenses
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention one-time, exceptional, or non-recurring expenses.
+
+Output Format:
+### One-time Expenses Risk Classification
+* [Only one-time expenses related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no one-time expenses red flags found, state: "No one-time expenses red flags present."
+""",
+
+        "margin_decline": f"""
+Analyze ONLY margin decline related red flags from the summary. Look specifically for:
+- Gross margin decline
+- Operating margin compression
+- EBITDA margin reduction
+- Profitability margin issues
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention margin declines or margin compression. Ignore revenue or cost issues separately.
+
+Output Format:
+### Margin Decline Risk Classification
+* [Only margin decline related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no margin decline red flags found, state: "No margin decline red flags present."
+""",
+
+        "cash_balance": f"""
+Analyze ONLY cash balance decline related red flags from the summary. Look specifically for:
+- Cash balance decreases
+- Cash flow negative trends
+- Liquidity reduction
+- Cash position deterioration
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention cash balance declines or cash position issues.
+
+Output Format:
+### Cash Balance Risk Classification
+* [Only cash balance decline related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no cash balance red flags found, state: "No cash balance red flags present."
+""",
+
+        "short_term_debt": f"""
+Analyze ONLY short-term debt or current liabilities related red flags from the summary. Look specifically for:
+- Short-term debt increases
+- Current liabilities growth
+- Working capital issues
+- Short-term borrowing increases
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention short-term debt or current liabilities increases.
+
+Output Format:
+### Short-term Debt Risk Classification
+* [Only short-term debt related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no short-term debt red flags found, state: "No short-term debt red flags present."
+""",
+
+        "management_issues": f"""
+Analyze ONLY management and leadership related red flags from the summary. Look specifically for:
+- Management turnover
+- Key personnel departures
+- Leadership changes
+- Governance issues
+- Strategic execution problems
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention management changes, leadership issues, or governance problems.
+
+Output Format:
+### Management Issues Risk Classification
+* [Only management/leadership related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no management issues red flags found, state: "No management issues red flags present."
+""",
+
+        "regulatory_compliance": f"""
+Analyze ONLY regulatory compliance related red flags from the summary. Look specifically for:
+- Regulatory violations
+- Compliance issues
+- Legal problems
+- Regulatory warnings or penalties
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention regulatory or compliance issues.
+
+Output Format:
+### Regulatory Compliance Risk Classification
+* [Only regulatory compliance related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no regulatory compliance red flags found, state: "No regulatory compliance red flags present."
+""",
+
+        "market_competition": f"""
+Analyze ONLY market competition related red flags from the summary. Look specifically for:
+- Competitive pressure
+- Market share loss
+- New competitors entering
+- Industry competition intensifying
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention competitive pressures or market share issues.
+
+Output Format:
+### Market Competition Risk Classification
+* [Only market competition related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no market competition red flags found, state: "No market competition red flags present."
+""",
+
+        "operational_disruptions": f"""
+Analyze ONLY operational disruption related red flags from the summary. Look specifically for:
+- Supply chain disruptions
+- Production issues
+- IT system failures
+- Operational inefficiencies
+- Infrastructure problems
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+From the summary, identify ONLY red flags that specifically mention operational disruptions or system failures.
+
+Output Format:
+### Operational Disruptions Risk Classification
+* [Only operational disruption related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no operational disruption red flags found, state: "No operational disruption red flags present."
 """
+    }
+    
+    # Get the specific prompt for this criterion
+    specific_prompt = specific_prompts.get(criteria_name, f"""
+Analyze red flags related to {criteria_name} from the summary.
+
+Criterion: {criteria_description}
+
+Previous Year Data: {previous_year_data}
+
+Output Format:
+### {criteria_name.title()} Risk Classification
+* [Only {criteria_name} related red flag if found]
+  - High: yes/no
+  - Medium: yes/no
+  - Low: yes/no
+  - Not_Applicable: yes/no
+
+If no {criteria_name} red flags found, state: "No {criteria_name} red flags present."
+""")
 
     full_prompt = f"""You must answer the question strictly based on the below given context.
 
 Context:
 {context}
 
-Based on the above context and analysis, please answer: {prompt}
+Summary from previous iteration:
+{fourth_response}
+
+Based on the above context and analysis, please answer: {specific_prompt}
 
 Answer:"""
     
