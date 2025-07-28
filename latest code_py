@@ -24,31 +24,69 @@ def parse_individual_criterion_response(response_text: str, criteria_name: str) 
     
     lines = cleaned_response.split('\n')
     
-    for line in lines:
+    # Track if we found a bullet point with summary
+    found_bullet_summary = False
+    
+    for i, line in enumerate(lines):
         line_lower = line.lower().strip()
         original_line = line.strip()
         
-        # Extract summary from bullet points
+        # Look for bullet points that contain summaries
         if line.startswith("*") or line.startswith("•"):
-            summary_text = original_line[1:].strip()
-            # Remove risk classification suffixes
-            summary_text = re.sub(r'\s*-\s*(high|medium|low):\s*(yes|no).*$', '', summary_text, flags=re.IGNORECASE)
-            if summary_text and "no " + criteria_name.replace('_', ' ') + " red flags" not in summary_text.lower():
-                current_summary = summary_text
+            # Extract text after bullet point
+            bullet_text = original_line[1:].strip()
+            
+            # Check if this line contains risk classifications
+            if any(risk in line_lower for risk in [" high:", " medium:", " low:", " not_applicable:"]):
+                # This is a bullet with inline risk classification
+                # Extract summary before the risk classification
+                summary_match = re.match(r'^(.+?)\s*-\s*(high|medium|low|not_applicable):', bullet_text, re.IGNORECASE)
+                if summary_match:
+                    summary_text = summary_match.group(1).strip()
+                    if summary_text and "no " + criteria_name.replace('_', ' ') + " red flags" not in summary_text.lower():
+                        current_summary = summary_text
+                        found_bullet_summary = True
+                        print(f"DEBUG {criteria_name}: Found inline summary: '{current_summary}'")
+            else:
+                # This is a bullet with just summary text
+                if bullet_text and "no " + criteria_name.replace('_', ' ') + " red flags" not in bullet_text.lower():
+                    current_summary = bullet_text
+                    found_bullet_summary = True
+                    print(f"DEBUG {criteria_name}: Found bullet summary: '{current_summary}'")
             continue
+        
+        # If no bullet summary found yet, try to extract from the context
+        if not found_bullet_summary and current_summary == "":
+            # Look for summary patterns in the text
+            if any(keyword in line_lower for keyword in ["debt increased", "revenue declined", "margin", "cash", "provisioning", "asset", "management", "regulatory", "competition", "operational"]):
+                # This might be a summary line, extract it
+                if not any(word in line_lower for word in ["high:", "medium:", "low:", "not_applicable:", "classification", "format", "answer:"]):
+                    current_summary = original_line.strip()
+                    print(f"DEBUG {criteria_name}: Found context summary: '{current_summary}'")
         
         # Check for risk classifications
         if "high:" in line_lower and "yes" in line_lower:
             count_high += 1
             if current_summary and current_summary not in high_summaries:
                 high_summaries.append(current_summary)
+                print(f"DEBUG {criteria_name}: Added HIGH summary: '{current_summary}'")
         elif "medium:" in line_lower and "yes" in line_lower:
             count_medium += 1
         elif "low:" in line_lower and "yes" in line_lower:
             count_low += 1
     
-    print(f"DEBUG {criteria_name}: Found {count_high} high, {count_medium} medium, {count_low} low")
-    print(f"DEBUG {criteria_name}: High summaries: {high_summaries}")
+    # If still no summary found but we have high risk classification, 
+    # try to extract from the fourth_response context
+    if count_high > 0 and not high_summaries:
+        print(f"DEBUG {criteria_name}: No summary extracted but found high risk. Trying fallback extraction...")
+        # This is a fallback - should not happen with good prompting
+        fallback_summary = f"{criteria_name.replace('_', ' ').title()} issues identified"
+        high_summaries.append(fallback_summary)
+        print(f"DEBUG {criteria_name}: Using fallback summary: '{fallback_summary}'")
+    
+    print(f"DEBUG {criteria_name}: Final - Found {count_high} high, {count_medium} medium, {count_low} low")
+    print(f"DEBUG {criteria_name}: Final High summaries: {high_summaries}")
+    print(f"DEBUG {criteria_name}: Raw response preview: {cleaned_response[:200]}...")
     
     return {
         'High': high_summaries,
@@ -96,11 +134,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Debt Increase Risk Classification
-* [ONLY if debt increase found with specific amounts/percentages]
-  - High: yes/no (if debt increased >=40% vs previous year)
-  - Medium: yes/no (if debt increased 25-40% vs previous year)  
-  - Low: yes/no (if debt increased <25% vs previous year)
-  - Not_Applicable: yes/no (if no debt increase data found)
+* [Brief summary of the debt increase issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no debt increase red flags present, state: "No debt increase red flags identified."
 """,
@@ -132,11 +166,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Provisioning Risk Classification
-* [ONLY if provisioning/write-offs found with specific amounts]
-  - High: yes/no (if >25% of current quarter EBITDA)
-  - Medium: yes/no (if 10-25% of current quarter EBITDA)
-  - Low: yes/no (if <10% of current quarter EBITDA)
-  - Not_Applicable: yes/no (if no provisioning data found)
+* [Brief summary of the provisioning issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no provisioning red flags present, state: "No provisioning red flags identified."
 """,
@@ -168,11 +198,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Asset Decline Risk Classification
-* [ONLY if asset decline found with specific amounts/percentages]
-  - High: yes/no (if assets declined >=40% vs previous year)
-  - Medium: yes/no (if assets declined 25-40% vs previous year)
-  - Low: yes/no (if assets declined <25% vs previous year)
-  - Not_Applicable: yes/no (if no asset decline data found)
+* [Brief summary of the asset decline issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no asset decline red flags present, state: "No asset decline red flags identified."
 """,
@@ -204,11 +230,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Receivable Days Risk Classification
-* [ONLY if receivable days increase found with specific numbers]
-  - High: yes/no (if receivable days increased >=40% vs 12 days previous)
-  - Medium: yes/no (if receivable days increased 25-40% vs 12 days previous)
-  - Low: yes/no (if receivable days increased <25% vs 12 days previous)
-  - Not_Applicable: yes/no (if no receivable days data found)
+* [Brief summary of the receivable days issue with specific numbers] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no receivable days red flags present, state: "No receivable days red flags identified."
 """,
@@ -240,11 +262,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Payable Days Risk Classification
-* [ONLY if payable days increase found with specific numbers]
-  - High: yes/no (if payable days increased >=40% vs 112 days previous)
-  - Medium: yes/no (if payable days increased 25-40% vs 112 days previous)
-  - Low: yes/no (if payable days increased <25% vs 112 days previous)
-  - Not_Applicable: yes/no (if no payable days data found)
+* [Brief summary of the payable days issue with specific numbers] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no payable days red flags present, state: "No payable days red flags identified."
 """,
@@ -276,11 +294,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Debt EBITDA Risk Classification
-* [ONLY if debt/EBITDA ratio found with specific multiples]
-  - High: yes/no (if Debt/EBITDA > 4x)
-  - Medium: yes/no (if Debt/EBITDA 2-4x)
-  - Low: yes/no (if Debt/EBITDA < 2x)
-  - Not_Applicable: yes/no (if no debt/EBITDA ratio data found)
+* [Brief summary of the debt/EBITDA issue with specific multiples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no debt/EBITDA red flags present, state: "No debt/EBITDA red flags identified."
 """,
@@ -312,11 +326,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Revenue Decline Risk Classification
-* [ONLY if revenue decline found with specific amounts/percentages]
-  - High: yes/no (if revenue declined >=25% vs previous quarter)
-  - Medium: yes/no (if revenue declined 10-25% vs previous quarter)
-  - Low: yes/no (if revenue declined <10% vs previous quarter)
-  - Not_Applicable: yes/no (if no revenue decline data found)
+* [Brief summary of the revenue decline issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no revenue decline red flags present, state: "No revenue decline red flags identified."
 """,
@@ -348,11 +358,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### One-time Expenses Risk Classification
-* [ONLY if one-time expenses found with specific amounts]
-  - High: yes/no (if >25% of current quarter EBITDA)
-  - Medium: yes/no (if 10-25% of current quarter EBITDA)
-  - Low: yes/no (if <10% of current quarter EBITDA)
-  - Not_Applicable: yes/no (if no one-time expenses data found)
+* [Brief summary of the one-time expenses issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no one-time expenses red flags present, state: "No one-time expenses red flags identified."
 """,
@@ -384,11 +390,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Margin Decline Risk Classification
-* [ONLY if margin decline found with specific percentages]
-  - High: yes/no (if margins declined >25% vs previous quarter)
-  - Medium: yes/no (if margins declined 10-25% vs previous quarter)
-  - Low: yes/no (if margins declined <10% vs previous quarter)
-  - Not_Applicable: yes/no (if no margin decline data found)
+* [Brief summary of the margin decline issue with specific percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no margin decline red flags present, state: "No margin decline red flags identified."
 """,
@@ -420,11 +422,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Cash Balance Risk Classification
-* [ONLY if cash balance decline found with specific amounts]
-  - High: yes/no (if cash declined >25% vs 1,663 Cr previous)
-  - Medium: yes/no (if cash declined 10-25% vs 1,663 Cr previous)
-  - Low: yes/no (if cash declined <10% vs 1,663 Cr previous)
-  - Not_Applicable: yes/no (if no cash balance data found)
+* [Brief summary of the cash balance decline issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no cash balance red flags present, state: "No cash balance red flags identified."
 """,
@@ -456,11 +454,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Short-term Debt Risk Classification
-* [ONLY if short-term debt increase found with specific amounts]
-  - High: yes/no (if short-term debt increased >=40% vs 1,071 Cr previous)
-  - Medium: yes/no (if short-term debt increased 25-40% vs 1,071 Cr previous)
-  - Low: yes/no (if short-term debt increased <25% vs 1,071 Cr previous)
-  - Not_Applicable: yes/no (if no short-term debt data found)
+* [Brief summary of the short-term debt issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no short-term debt red flags present, state: "No short-term debt red flags identified."
 """,
@@ -493,11 +487,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Management Issues Risk Classification
-* [ONLY if management issues found with specific examples]
-  - High: yes/no (if senior management turnover or major governance issues)
-  - Medium: yes/no (if middle management changes or minor governance concerns)
-  - Low: yes/no (if minor management adjustments mentioned)
-  - Not_Applicable: yes/no (if no management issues data found)
+* [Brief summary of the management issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no management issues red flags present, state: "No management issues red flags identified."
 """,
@@ -530,11 +520,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Regulatory Compliance Risk Classification
-* [ONLY if regulatory issues found with specific examples]
-  - High: yes/no (if major violations, significant fines, or license issues)
-  - Medium: yes/no (if moderate compliance concerns or warnings)
-  - Low: yes/no (if minor regulatory matters mentioned)
-  - Not_Applicable: yes/no (if no regulatory issues data found)
+* [Brief summary of the regulatory issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no regulatory compliance red flags present, state: "No regulatory compliance red flags identified."
 """,
@@ -567,11 +553,7 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Market Competition Risk Classification
-* [ONLY if competition issues found with specific examples]
-  - High: yes/no (if significant market share loss or intense competition)
-  - Medium: yes/no (if moderate competitive pressure mentioned)
-  - Low: yes/no (if minor competitive concerns noted)
-  - Not_Applicable: yes/no (if no competition issues data found)
+* [Brief summary of the competition issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no market competition red flags present, state: "No market competition red flags identified."
 """,
@@ -604,11 +586,345 @@ ANALYSIS INSTRUCTIONS:
 
 OUTPUT FORMAT:
 ### Operational Disruptions Risk Classification
-* [ONLY if operational disruptions found with specific examples]
-  - High: yes/no (if major disruptions affecting business operations)
-  - Medium: yes/no (if moderate operational issues mentioned)
-  - Low: yes/no (if minor operational concerns noted)
-  - Not_Applicable: yes/no (if no operational issues data found)
+* [Brief summary of the operational issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no operational disruption red flags present, state: "No operational disruption red flags identified."
+"""
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific payable days numbers or DPO values only
+2. Compare with previous year payable days (112 days from data)
+3. Calculate percentage increase in payable days
+4. If no payable days data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Payable Days Risk Classification
+* [Brief summary of the payable days issue with specific numbers] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no payable days red flags present, state: "No payable days red flags identified."
+""",
+
+        "debt_ebitda": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including revenue, margins, provisioning, assets, operations, management, etc.
+
+TASK: Analyze ONLY debt-to-EBITDA ratio red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Debt/EBITDA ratio mentioned with specific multiples (e.g., 3x, 4.5x)
+- Net debt to EBITDA ratios with numbers
+- Leverage ratios exceeding covenant limits
+- Interest coverage ratios deteriorating
+- Debt serviceability concerns with specific metrics
+
+STRICTLY IGNORE: General debt issues, profitability problems, operational issues, management problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific debt/EBITDA ratio values or multiples only
+2. Look for leverage ratio mentions with numbers
+3. Classify based on ratio thresholds
+4. If no ratio data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Debt EBITDA Risk Classification
+* [Brief summary of the debt/EBITDA issue with specific multiples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no debt/EBITDA red flags present, state: "No debt/EBITDA red flags identified."
+""",
+
+        "revenue_decline": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, margins, provisioning, assets, operations, management, etc.
+
+TASK: Analyze ONLY revenue decline red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Revenue decreased with specific amounts or percentages
+- Sales decline mentioned with numbers
+- Top-line reduction with comparative figures
+- Quarterly/annual revenue comparisons showing decline
+- Revenue growth turning negative with percentages
+
+STRICTLY IGNORE: Margin issues, cost problems, profitability (unless specifically revenue decline), debt issues, operational problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific revenue decline amounts or percentages only
+2. Compare with previous quarter revenue (1,045 Cr from data)
+3. Calculate percentage decline in revenue
+4. If no revenue decline data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Revenue Decline Risk Classification
+* [Brief summary of the revenue decline issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no revenue decline red flags present, state: "No revenue decline red flags identified."
+""",
+
+        "onetime_expenses": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, assets, operations, management, etc.
+
+TASK: Analyze ONLY one-time expenses or exceptional items red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- One-time charges mentioned with specific amounts
+- Exceptional expenses with monetary values
+- Non-recurring costs with amounts
+- Extraordinary items with values
+- Special charges or write-offs (one-time nature)
+
+STRICTLY IGNORE: Regular operational expenses, recurring costs, ongoing expenses, provisioning (unless one-time), debt issues
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific one-time expense amounts only
+2. Calculate percentage of current quarter EBITDA
+3. Classify based on one-time expenses as % of EBITDA
+4. If no one-time expenses found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### One-time Expenses Risk Classification
+* [Brief summary of the one-time expenses issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no one-time expenses red flags present, state: "No one-time expenses red flags identified."
+""",
+
+        "margin_decline": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue (unless margin-related), provisioning, assets, operations, management, etc.
+
+TASK: Analyze ONLY margin decline red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Gross margin declined with specific percentages
+- Operating margin compression with numbers
+- EBITDA margin reduction with percentages
+- Profit margins decreased with comparative figures
+- Margin pressure with specific margin percentages
+
+STRICTLY IGNORE: Revenue issues (unless margin-related), cost increases (unless margin-related), debt issues, operational problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific margin decline percentages only
+2. Compare with previous operating margin (-44.00% from data)
+3. Calculate percentage change in margins
+4. If no margin data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Margin Decline Risk Classification
+* [Brief summary of the margin decline issue with specific percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no margin decline red flags present, state: "No margin decline red flags identified."
+""",
+
+        "cash_balance": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, etc.
+
+TASK: Analyze ONLY cash balance decline red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Cash balance decreased with specific amounts
+- Cash and cash equivalents declined with numbers
+- Liquidity position deteriorated with values
+- Cash flow negative with amounts
+- Cash reserves reduced with comparative figures
+
+STRICTLY IGNORE: Working capital changes (unless cash-specific), debt issues, revenue problems, operational issues
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific cash balance decline amounts only
+2. Compare with previous cash balance (1,663 Cr from data)
+3. Calculate percentage decline in cash balance
+4. If no cash balance data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Cash Balance Risk Classification
+* [Brief summary of the cash balance decline issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no cash balance red flags present, state: "No cash balance red flags identified."
+""",
+
+        "short_term_debt": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including long-term debt, revenue, margins, provisioning, assets, operations management, etc.
+
+TASK: Analyze ONLY short-term debt or current liabilities red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Short-term debt increased with specific amounts
+- Current liabilities growth with numbers
+- Short-term borrowings increased with values
+- Working capital loans increased with amounts
+- Current portion of long-term debt increased
+
+STRICTLY IGNORE: Long-term debt, total debt (unless specifically short-term component), revenue issues, operational problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific short-term debt or current liabilities increases only
+2. Compare with previous current liabilities (1,071 Cr from data)
+3. Calculate percentage increase
+4. If no short-term debt data found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Short-term Debt Risk Classification
+* [Brief summary of the short-term debt issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no short-term debt red flags present, state: "No short-term debt red flags identified."
+""",
+
+        "management_issues": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, regulatory, market issues, etc.
+
+TASK: Analyze ONLY management and leadership red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- CEO, CFO, or senior management departures mentioned
+- Key personnel turnover with names/positions
+- Management changes announced
+- Leadership team restructuring
+- Governance issues or board changes
+- Strategic execution failures attributed to management
+
+STRICTLY IGNORE: Operational issues, financial problems (unless specifically management-related), regulatory issues, market problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific management turnover or leadership changes only
+2. Look for named executives leaving or governance issues
+3. Classify based on severity of management issues
+4. If no management issues found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Management Issues Risk Classification
+* [Brief summary of the management issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no management issues red flags present, state: "No management issues red flags identified."
+""",
+
+        "regulatory_compliance": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, market issues, etc.
+
+TASK: Analyze ONLY regulatory compliance red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Regulatory violations mentioned with specific agencies
+- Compliance issues with legal/regulatory consequences
+- Fines or penalties from regulators with amounts
+- Legal proceedings related to regulatory matters
+- Regulatory warnings or notices mentioned
+- License suspensions or regulatory actions
+
+STRICTLY IGNORE: General legal issues, commercial disputes (unless specifically regulatory), operational problems, financial issues
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific regulatory violations or compliance issues only
+2. Look for regulator names, fines, or enforcement actions
+3. Classify based on severity of regulatory concerns
+4. If no regulatory issues found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Regulatory Compliance Risk Classification
+* [Brief summary of the regulatory issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no regulatory compliance red flags present, state: "No regulatory compliance red flags identified."
+""",
+
+        "market_competition": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, regulatory issues, etc.
+
+TASK: Analyze ONLY market competition red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Market share loss mentioned with percentages
+- New competitors entering market with names
+- Competitive pressure with specific examples
+- Pricing competition affecting margins
+- Industry competition intensifying with details
+- Competitive positioning weakening
+
+STRICTLY IGNORE: General market conditions, economic factors (unless specifically competition-related), operational issues, financial problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific competitive pressures or market share data only
+2. Look for named competitors or competitive dynamics
+3. Classify based on severity of competitive impact
+4. If no competition issues found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Market Competition Risk Classification
+* [Brief summary of the competition issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
+
+If no market competition red flags present, state: "No market competition red flags identified."
+""",
+
+        "operational_disruptions": f"""
+CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
+IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, management, regulatory, market issues, etc.
+
+TASK: Analyze ONLY operational disruption red flags. Be extremely specific.
+
+LOOK FOR THESE EXACT INDICATORS ONLY:
+- Supply chain disruptions with specific impacts
+- Production issues or facility shutdowns
+- IT system failures affecting operations
+- Infrastructure problems with details
+- Operational inefficiencies with examples
+- Service disruptions mentioned
+
+STRICTLY IGNORE: Financial issues, management problems (unless specifically operational), regulatory issues, market problems
+
+CRITERION: {criteria_description}
+PREVIOUS YEAR DATA: {previous_year_data}
+
+ANALYSIS INSTRUCTIONS:
+1. Search for specific operational disruptions or system failures only
+2. Look for production, supply chain, or infrastructure issues
+3. Classify based on severity of operational impact
+4. If no operational issues found, mark as Not_Applicable
+5. Maximum ONE red flag summary allowed for this criterion
+
+OUTPUT FORMAT:
+### Operational Disruptions Risk Classification
+* [Brief summary of the operational issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
 
 If no operational disruption red flags present, state: "No operational disruption red flags identified."
 """
