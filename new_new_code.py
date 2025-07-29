@@ -1,3 +1,4 @@
+import ast
 import os
 import time
 import pandas as pd
@@ -415,68 +416,115 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-# [Keep the same parsing functions as they don't need changes]
-def parse_risk_classification_response(response_text: str) -> Dict:
+def extract_unique_flags_from_second_iteration(second_response: str, llm: AzureOpenAILLM) -> List[str]:
     """
-    Parse the 5th iteration response to extract risk flag counts and HIGH RISK summaries
-    This replaces LLM calls for counting and summary extraction
+    NEW METHOD: Extract unique flags from 2nd iteration response
     """
+    prompt = f"""
+Analyze the following red flags analysis and extract a clean list of unique red flags.
+
+Red Flags Analysis:
+{second_response}
+
+Your task:
+1. Identify each unique red flag mentioned in the analysis
+2. Extract only the brief description of each red flag (not the full quotes)
+3. Remove any duplicates or similar flags
+4. Present each flag as a concise, clear statement
+
+Output format - return ONLY a Python list format:
+["flag description 1", "flag description 2", "flag description 3", ...]
+
+Example output:
+["Debt reduction lower than expected", "Margin pressure due to competition", "High borrowing costs", "Revenue decline", "Cash flow issues"]
+
+Return only the list, no other text or explanation.
+"""
     
-    # Convert to lowercase for case-insensitive matching
-    original_resp = response_text
-    response_lower = response_text.lower()
+    response = llm._call(prompt, max_tokens=1000)
     
-    # Initialize counters
-    count_high = 0
-    count_medium = 0  
-    count_low = 0
-    
-    # Only store HIGH RISK summaries (without category)
-    high_summaries = []
-    
-    # Split response into lines
-    output_lines = response_lower.splitlines()
-    original_lines = original_resp.splitlines()
-    
-    # Track current red flag summary
-    current_summary = ""
-    
-    for idx, line in enumerate(output_lines):
-        line = line.strip()
-        original_line = original_lines[idx].strip() if idx < len(original_lines) else ""
+    try:
+        # Try to parse as Python list
+        unique_flags = ast.literal_eval(response.strip())
+        if isinstance(unique_flags, list):
+            return unique_flags
+    except:
+        # If parsing fails, try to extract manually
+        lines = response.strip().split('\n')
+        unique_flags = []
+        for line in lines:
+            line = line.strip()
+            if line.startswith('"') and line.endswith('"'):
+                unique_flags.append(line[1:-1])
+            elif line.startswith("'") and line.endswith("'"):
+                unique_flags.append(line[1:-1])
         
-        # Detect red flag summary (lines starting with * or •)
-        if line.startswith("*") or line.startswith("•"):
-            # Extract summary (remove bullet point and get text until risk classification)
-            summary_match = re.match(r'^[*•]\s*(.+?)(?:\s*-\s*high:|$)', original_line, re.IGNORECASE)
-            if summary_match:
-                current_summary = summary_match.group(1).strip()
-            continue
-        
-        # Check for risk level classifications and count them
-        if "high:" in line and "yes" in line:
-            count_high += 1
-            # Only store summary for HIGH RISK (without category)
-            if current_summary:
-                high_summaries.append(current_summary)
-                
-        elif "medium:" in line and "yes" in line:
-            count_medium += 1
-                
-        elif "low:" in line and "yes" in line:
-            count_low += 1
+        if unique_flags:
+            return unique_flags
     
-    return {
-        'High': high_summaries,
-        'Medium': [],
-        'Low': [],
-        'counts': {
-            'High': count_high,
-            'Medium': count_medium,
-            'Low': count_low
-        }
+    # Fallback: return empty list
+    return []
+
+def classify_flag_against_criteria(flag: str, criteria_definitions: Dict[str, str], previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """
+    NEW METHOD: Classify a single flag against all 15 criteria
+    """
+    criteria_list = "\n".join([f"{i+1}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_definitions.items())])
+    
+    prompt = f"""
+You are a financial risk analyst. Your task is to classify the following red flag against the given criteria.
+
+RED FLAG TO CLASSIFY: "{flag}"
+
+CRITERIA DEFINITIONS:
+{criteria_list}
+
+PREVIOUS YEAR DATA:
+{previous_year_data}
+
+INSTRUCTIONS:
+1. Check if this red flag matches ANY of the 15 criteria above
+2. If it matches a criterion, classify it as either "High" or "Low" risk based on the criterion definition
+3. If it doesn't match any specific criterion, classify it as "Low" risk by default
+4. Return the result in the specified format
+
+OUTPUT FORMAT:
+Matched_Criteria: [criteria_name if matched, or "None" if no match]
+Risk_Level: [High/Low]
+Reasoning: [Brief explanation of why this classification was chosen]
+
+Example outputs:
+Matched_Criteria: debt_increase
+Risk_Level: High
+Reasoning: Flag indicates debt increase of 40% which exceeds the 30% threshold for high risk
+
+OR
+
+Matched_Criteria: None
+Risk_Level: Low
+Reasoning: Flag does not match any specific criteria, defaulting to low risk
+"""
+    
+    response = llm._call(prompt, max_tokens=500)
+    
+    # Parse the response
+    result = {
+        'matched_criteria': 'None',
+        'risk_level': 'Low',
+        'reasoning': 'No specific reasoning provided'
     }
- 
+    
+    lines = response.strip().split('\n')
+    for line in lines:
+        if line.startswith('Matched_Criteria:'):
+            result['matched_criteria'] = line.split(':', 1)[1].strip()
+        elif line.startswith('Risk_Level:'):
+            result['risk_level'] = line.split(':', 1)[1].strip()
+        elif line.startswith('Reasoning:'):
+            result['reasoning'] = line.split(':', 1)[1].strip()
+    
+    return result
+
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
     categories_summary = {}
@@ -508,8 +556,9 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
    
     return categories_summary
  
-def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, Any],
-                        summary_by_categories: Dict[str, List[str]], output_folder: str) -> str:
+def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
+                        high_risk_flags: List[str], summary_by_categories: Dict[str, List[str]], 
+                        output_folder: str) -> str:
     """Create a formatted Word document with the analysis results"""
    
     # Create new document
@@ -527,16 +576,13 @@ def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, 
     table = doc.add_table(rows=4, cols=2)
     table.style = 'Table Grid'
    
-    # Add table headers and data using extracted counts
-    high_count = risk_data['counts']['High']
-    medium_count = risk_data['counts']['Medium']
-    low_count = risk_data['counts']['Low']
-    total_count = high_count + medium_count + low_count
+    # Add table headers and data using counts
+    high_count = risk_counts['High']
+    low_count = risk_counts['Low']
+    total_count = high_count + low_count
    
     table.cell(0, 0).text = 'High Risk'
     table.cell(0, 1).text = str(high_count)
-    table.cell(1, 0).text = 'Medium Risk'
-    table.cell(1, 1).text = str(medium_count)
     table.cell(2, 0).text = 'Low Risk'
     table.cell(2, 1).text = str(low_count)
     table.cell(3, 0).text = 'Total Flags'
@@ -549,31 +595,25 @@ def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, 
     # Add space
     doc.add_paragraph('')
    
-    # Debug: Print what we're about to add to the document
-    print(f"DEBUG WORD: About to add {high_count} high risk flags to document")
-    print(f"DEBUG WORD: High risk flags: {risk_data['High']}")
-   
-    # Add High Risk Flags section only
-    if risk_data['High']:
+    # Add High Risk Flags section
+    if high_risk_flags:
         high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
         high_risk_heading.runs[0].bold = True
        
-        for flag in risk_data['High']:
+        for flag in high_risk_flags:
             p = doc.add_paragraph()
             p.style = 'List Bullet'
             p.add_run(flag)
-            print(f"DEBUG WORD: Added flag to document: {flag}")
     else:
         # If no high risk flags, add a note
         high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
         high_risk_heading.runs[0].bold = True
         no_flags_para = doc.add_paragraph('No high risk flags identified.')
-        print("DEBUG WORD: No high risk flags found - added 'No high risk flags identified' message")
    
     # Add horizontal line
     doc.add_paragraph('_' * 50)
    
-    # Add Summary section
+    # Add Summary section (4th iteration results)
     summary_heading = doc.add_heading('Summary', level=1)
     summary_heading.runs[0].bold = True
    
@@ -600,652 +640,12 @@ def create_word_document(pdf_name: str, company_info: str, risk_data: Dict[str, 
    
     return doc_path
 
-def parse_individual_criterion_response(response_text: str, criteria_name: str) -> Dict:
-    """
-    Parse response from a single criterion evaluation to avoid cross-contamination
-    """
-    
-    # Clean response text
-    cleaned_lines = []
-    for line in response_text.split('\n'):
-        line = line.strip()
-        if (line.startswith('INFO:') or 
-            line.startswith('DEBUG:') or 
-            line.startswith('WARNING:') or 
-            line.startswith('ERROR:') or
-            not line):
-            continue
-        cleaned_lines.append(line)
-    
-    cleaned_response = '\n'.join(cleaned_lines)
-    
-    # Initialize for this criterion only
-    count_high = count_medium = count_low = 0
-    high_summaries = []
-    current_summary = ""
-    
-    lines = cleaned_response.split('\n')
-    
-    # Track if we found a bullet point with summary
-    found_bullet_summary = False
-    
-    for i, line in enumerate(lines):
-        line_lower = line.lower().strip()
-        original_line = line.strip()
-        
-        # Look for bullet points that contain summaries
-        if line.startswith("*") or line.startswith("•"):
-            # Extract text after bullet point
-            bullet_text = original_line[1:].strip()
-            
-            # Check if this line contains risk classifications
-            if any(risk in line_lower for risk in [" high:", " medium:", " low:", " not_applicable:"]):
-                # This is a bullet with inline risk classification
-                # Extract summary before the risk classification
-                summary_match = re.match(r'^(.+?)\s*-\s*(high|medium|low|not_applicable):', bullet_text, re.IGNORECASE)
-                if summary_match:
-                    summary_text = summary_match.group(1).strip()
-                    if summary_text and "no " + criteria_name.replace('_', ' ') + " red flags" not in summary_text.lower():
-                        current_summary = summary_text
-                        found_bullet_summary = True
-                        print(f"DEBUG {criteria_name}: Found inline summary: '{current_summary}'")
-            else:
-                # This is a bullet with just summary text
-                if bullet_text and "no " + criteria_name.replace('_', ' ') + " red flags" not in bullet_text.lower():
-                    current_summary = bullet_text
-                    found_bullet_summary = True
-                    print(f"DEBUG {criteria_name}: Found bullet summary: '{current_summary}'")
-            continue
-        
-        # If no bullet summary found yet, try to extract from the context
-        if not found_bullet_summary and current_summary == "":
-            # Look for summary patterns in the text
-            if any(keyword in line_lower for keyword in ["debt increased", "revenue declined", "margin", "cash", "provisioning", "asset", "management", "regulatory", "competition", "operational"]):
-                # This might be a summary line, extract it
-                if not any(word in line_lower for word in ["high:", "medium:", "low:", "not_applicable:", "classification", "format", "answer:"]):
-                    current_summary = original_line.strip()
-                    print(f"DEBUG {criteria_name}: Found context summary: '{current_summary}'")
-        
-        # Check for risk classifications
-        if "high:" in line_lower and "yes" in line_lower:
-            count_high += 1
-            if current_summary and current_summary not in high_summaries:
-                high_summaries.append(current_summary)
-                print(f"DEBUG {criteria_name}: Added HIGH summary: '{current_summary}'")
-        elif "medium:" in line_lower and "yes" in line_lower:
-            count_medium += 1
-        elif "low:" in line_lower and "yes" in line_lower:
-            count_low += 1
-    
-    # If still no summary found but we have high risk classification, 
-    # try to extract from the fourth_response context
-    if count_high > 0 and not high_summaries:
-        print(f"DEBUG {criteria_name}: No summary extracted but found high risk. Trying fallback extraction...")
-        # This is a fallback - should not happen with good prompting
-        fallback_summary = f"{criteria_name.replace('_', ' ').title()} issues identified"
-        high_summaries.append(fallback_summary)
-        print(f"DEBUG {criteria_name}: Using fallback summary: '{fallback_summary}'")
-    
-    print(f"DEBUG {criteria_name}: Final - Found {count_high} high, {count_medium} medium, {count_low} low")
-    print(f"DEBUG {criteria_name}: Final High summaries: {high_summaries}")
-    print(f"DEBUG {criteria_name}: Raw response preview: {cleaned_response[:200]}...")
-    
-    return {
-        'High': high_summaries,
-        'Medium': [],
-        'Low': [],
-        'counts': {
-            'High': count_high,
-            'Medium': count_medium,
-            'Low': count_low
-        }
-    }
-
-def evaluate_individual_criteria(llm: AzureOpenAILLM, context: str, fourth_response: str, 
-                                previous_year_data: str, criteria_name: str, criteria_description: str) -> str:
-    """
-    Enhanced version with better prompt engineering to prevent duplication
-    """
-    
-    # Define highly specific and accurate prompts for each criterion
-    specific_prompts = {
-        "debt_increase": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including revenue, margins, operations, management, etc.
-
-TASK: Analyze ONLY debt-related red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Total debt increased by specific amounts or percentages
-- Long-term debt growth mentioned with numbers
-- New borrowings or loan facilities taken
-- Debt restructuring that increases overall debt burden
-- Interest expenses increased due to higher debt levels
-
-STRICTLY IGNORE: Revenue issues, margin problems, operational costs, working capital changes, provisioning, asset issues, management problems, regulatory issues
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search the summary for ONLY debt increase mentions with specific numbers
-2. Look for specific debt amounts, percentages, or borrowing activities
-3. Classify risk level based on debt increase percentage vs previous year
-4. If no specific debt increase data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Debt Increase Risk Classification
-* [Brief summary of the debt increase issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no debt increase red flags present, state: "No debt increase red flags identified."
-""",
-        
-        "provisioning": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, operations, management, etc.
-
-TASK: Analyze ONLY provisioning and write-off red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Provisioning for bad debts with specific amounts
-- Write-offs mentioned with monetary values
-- Impairment charges on assets with amounts
-- Credit loss provisions with percentages of EBITDA
-- ECL (Expected Credit Loss) provisions
-
-STRICTLY IGNORE: General debt issues, operational problems, revenue declines, margin issues, management problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific provisioning amounts or write-off values only
-2. Calculate percentage of current quarter EBITDA if amounts given
-3. Classify based on provisioning as % of EBITDA
-4. If no provisioning data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Provisioning Risk Classification
-* [Brief summary of the provisioning issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no provisioning red flags present, state: "No provisioning red flags identified."
-""",
-
-        "asset_decline": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, operations, management, etc.
-
-TASK: Analyze ONLY asset value decline red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Total assets decreased with specific amounts or percentages
-- Fixed asset values declined with numbers
-- Asset impairment charges mentioned
-- Investment value decreases with amounts
-- Property, plant & equipment write-downs
-
-STRICTLY IGNORE: Debt issues, revenue problems, margin compression, provisioning issues, operational problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific asset value decreases or impairments only
-2. Look for asset amounts and compare with previous year data
-3. Classify based on asset decline percentage
-4. If no asset decline data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Asset Decline Risk Classification
-* [Brief summary of the asset decline issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no asset decline red flags present, state: "No asset decline red flags identified."
-""",
-
-        "receivable_days": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, etc.
-
-TASK: Analyze ONLY receivable days or accounts receivable red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Receivable days increased with specific numbers
-- Days Sales Outstanding (DSO) mentioned with values
-- Accounts receivable collection period extended
-- Trade receivables increased with amounts
-- Customer payment delays affecting collection period
-
-STRICTLY IGNORE: General revenue issues, cash flow problems, debt issues, margin problems, operational issues
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific receivable days numbers or DSO values only
-2. Compare with previous year receivable days (12 days from data)
-3. Calculate percentage increase in receivable days
-4. If no receivable days data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Receivable Days Risk Classification
-* [Brief summary of the receivable days issue with specific numbers] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no receivable days red flags present, state: "No receivable days red flags identified."
-""",
-
-        "payable_days": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, receivables operations, management, etc.
-
-TASK: Analyze ONLY payable days or accounts payable red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Payable days increased with specific numbers
-- Days Payable Outstanding (DPO) mentioned with values
-- Accounts payable payment period extended
-- Trade payables increased with amounts
-- Supplier payment delays affecting payment period
-
-STRICTLY IGNORE: General cash flow issues, working capital problems, debt issues, receivable issues, operational problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific payable days numbers or DPO values only
-2. Compare with previous year payable days (112 days from data)
-3. Calculate percentage increase in payable days
-4. If no payable days data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Payable Days Risk Classification
-* [Brief summary of the payable days issue with specific numbers] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no payable days red flags present, state: "No payable days red flags identified."
-""",
-
-        "debt_ebitda": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including revenue, margins, provisioning, assets, operations, management, etc.
-
-TASK: Analyze ONLY debt-to-EBITDA ratio red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Debt/EBITDA ratio mentioned with specific multiples (e.g., 3x, 4.5x)
-- Net debt to EBITDA ratios with numbers
-- Leverage ratios exceeding covenant limits
-- Interest coverage ratios deteriorating
-- Debt serviceability concerns with specific metrics
-
-STRICTLY IGNORE: General debt issues, profitability problems, operational issues, management problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific debt/EBITDA ratio values or multiples only
-2. Look for leverage ratio mentions with numbers
-3. Classify based on ratio thresholds
-4. If no ratio data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Debt EBITDA Risk Classification
-* [Brief summary of the debt/EBITDA issue with specific multiples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no debt/EBITDA red flags present, state: "No debt/EBITDA red flags identified."
-""",
-
-        "revenue_decline": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, margins, provisioning, assets, operations, management, etc.
-
-TASK: Analyze ONLY revenue decline red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Revenue decreased with specific amounts or percentages
-- Sales decline mentioned with numbers
-- Top-line reduction with comparative figures
-- Quarterly/annual revenue comparisons showing decline
-- Revenue growth turning negative with percentages
-
-STRICTLY IGNORE: Margin issues, cost problems, profitability (unless specifically revenue decline), debt issues, operational problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific revenue decline amounts or percentages only
-2. Compare with previous quarter revenue (1,045 Cr from data)
-3. Calculate percentage decline in revenue
-4. If no revenue decline data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Revenue Decline Risk Classification
-* [Brief summary of the revenue decline issue with specific amounts/percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no revenue decline red flags present, state: "No revenue decline red flags identified."
-""",
-
-        "onetime_expenses": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, assets, operations, management, etc.
-
-TASK: Analyze ONLY one-time expenses or exceptional items red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- One-time charges mentioned with specific amounts
-- Exceptional expenses with monetary values
-- Non-recurring costs with amounts
-- Extraordinary items with values
-- Special charges or write-offs (one-time nature)
-
-STRICTLY IGNORE: Regular operational expenses, recurring costs, ongoing expenses, provisioning (unless one-time), debt issues
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific one-time expense amounts only
-2. Calculate percentage of current quarter EBITDA
-3. Classify based on one-time expenses as % of EBITDA
-4. If no one-time expenses found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### One-time Expenses Risk Classification
-* [Brief summary of the one-time expenses issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no one-time expenses red flags present, state: "No one-time expenses red flags identified."
-""",
-
-        "margin_decline": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue (unless margin-related), provisioning, assets, operations, management, etc.
-
-TASK: Analyze ONLY margin decline red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Gross margin declined with specific percentages
-- Operating margin compression with numbers
-- EBITDA margin reduction with percentages
-- Profit margins decreased with comparative figures
-- Margin pressure with specific margin percentages
-
-STRICTLY IGNORE: Revenue issues (unless margin-related), cost increases (unless margin-related), debt issues, operational problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific margin decline percentages only
-2. Compare with previous operating margin (-44.00% from data)
-3. Calculate percentage change in margins
-4. If no margin data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Margin Decline Risk Classification
-* [Brief summary of the margin decline issue with specific percentages] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no margin decline red flags present, state: "No margin decline red flags identified."
-""",
-
-        "cash_balance": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, etc.
-
-TASK: Analyze ONLY cash balance decline red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Cash balance decreased with specific amounts
-- Cash and cash equivalents declined with numbers
-- Liquidity position deteriorated with values
-- Cash flow negative with amounts
-- Cash reserves reduced with comparative figures
-
-STRICTLY IGNORE: Working capital changes (unless cash-specific), debt issues, revenue problems, operational issues
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific cash balance decline amounts only
-2. Compare with previous cash balance (1,663 Cr from data)
-3. Calculate percentage decline in cash balance
-4. If no cash balance data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Cash Balance Risk Classification
-* [Brief summary of the cash balance decline issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no cash balance red flags present, state: "No cash balance red flags identified."
-""",
-
-        "short_term_debt": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including long-term debt, revenue, margins, provisioning, assets, operations management, etc.
-
-TASK: Analyze ONLY short-term debt or current liabilities red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Short-term debt increased with specific amounts
-- Current liabilities growth with numbers
-- Short-term borrowings increased with values
-- Working capital loans increased with amounts
-- Current portion of long-term debt increased
-
-STRICTLY IGNORE: Long-term debt, total debt (unless specifically short-term component), revenue issues, operational problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific short-term debt or current liabilities increases only
-2. Compare with previous current liabilities (1,071 Cr from data)
-3. Calculate percentage increase
-4. If no short-term debt data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Short-term Debt Risk Classification
-* [Brief summary of the short-term debt issue with specific amounts] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no short-term debt red flags present, state: "No short-term debt red flags identified."
-""",
-
-        "management_issues": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, regulatory, market issues, etc.
-
-TASK: Analyze ONLY management and leadership red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- CEO, CFO, or senior management departures mentioned
-- Key personnel turnover with names/positions
-- Management changes announced
-- Leadership team restructuring
-- Governance issues or board changes
-- Strategic execution failures attributed to management
-
-STRICTLY IGNORE: Operational issues, financial problems (unless specifically management-related), regulatory issues, market problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific management turnover or leadership changes only
-2. Look for named executives leaving or governance issues
-3. Classify based on severity of management issues
-4. If no management issues found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Management Issues Risk Classification
-* [Brief summary of the management issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no management issues red flags present, state: "No management issues red flags identified."
-""",
-
-        "regulatory_compliance": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, market issues, etc.
-
-TASK: Analyze ONLY regulatory compliance red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Regulatory violations mentioned with specific agencies
-- Compliance issues with legal/regulatory consequences
-- Fines or penalties from regulators with amounts
-- Legal proceedings related to regulatory matters
-- Regulatory warnings or notices mentioned
-- License suspensions or regulatory actions
-
-STRICTLY IGNORE: General legal issues, commercial disputes (unless specifically regulatory), operational problems, financial issues
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific regulatory violations or compliance issues only
-2. Look for regulator names, fines, or enforcement actions
-3. Classify based on severity of regulatory concerns
-4. If no regulatory issues found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Regulatory Compliance Risk Classification
-* [Brief summary of the regulatory issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no regulatory compliance red flags present, state: "No regulatory compliance red flags identified."
-""",
-
-        "market_competition": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, operations, management, regulatory issues, etc.
-
-TASK: Analyze ONLY market competition red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Market share loss mentioned with percentages
-- New competitors entering market with names
-- Competitive pressure with specific examples
-- Pricing competition affecting margins
-- Industry competition intensifying with details
-- Competitive positioning weakening
-
-STRICTLY IGNORE: General market conditions, economic factors (unless specifically competition-related), operational issues, financial problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific competitive pressures or market share data only
-2. Look for named competitors or competitive dynamics
-3. Classify based on severity of competitive impact
-4. If no competition issues found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Market Competition Risk Classification
-* [Brief summary of the competition issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no market competition red flags present, state: "No market competition red flags identified."
-""",
-
-        "operational_disruptions": f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems including debt, revenue, margins, provisioning, assets, management, regulatory, market issues, etc.
-
-TASK: Analyze ONLY operational disruption red flags. Be extremely specific.
-
-LOOK FOR THESE EXACT INDICATORS ONLY:
-- Supply chain disruptions with specific impacts
-- Production issues or facility shutdowns
-- IT system failures affecting operations
-- Infrastructure problems with details
-- Operational inefficiencies with examples
-- Service disruptions mentioned
-
-STRICTLY IGNORE: Financial issues, management problems (unless specifically operational), regulatory issues, market problems
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific operational disruptions or system failures only
-2. Look for production, supply chain, or infrastructure issues
-3. Classify based on severity of operational impact
-4. If no operational issues found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### Operational Disruptions Risk Classification
-* [Brief summary of the operational issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no operational disruption red flags present, state: "No operational disruption red flags identified."
-"""
-    }
-    
-    # Get the specific prompt for this criterion
-    specific_prompt = specific_prompts.get(criteria_name, f"""
-CRITICAL: Analyze ONLY {criteria_name.upper().replace('_', ' ')} related issues. 
-IGNORE all other financial problems.
-
-TASK: Analyze red flags related to {criteria_name} from the summary. Be extremely specific.
-
-CRITERION: {criteria_description}
-PREVIOUS YEAR DATA: {previous_year_data}
-
-ANALYSIS INSTRUCTIONS:
-1. Search for specific {criteria_name} indicators in the summary only
-2. Look for quantitative data and specific examples
-3. Classify based on severity and impact
-4. If no {criteria_name} data found, mark as Not_Applicable
-5. Maximum ONE red flag summary allowed for this criterion
-
-OUTPUT FORMAT:
-### {criteria_name.title().replace('_', ' ')} Risk Classification
-* [Brief summary of the {criteria_name} issue with specific examples] - High: yes/no, Medium: yes/no, Low: yes/no, Not_Applicable: yes/no
-
-If no {criteria_name} red flags present, state: "No {criteria_name.replace('_', ' ')} red flags identified."
-""")
-
-    full_prompt = f"""You are an expert financial analyst. Analyze the context and summary with extreme precision.
-
-CONTEXT:
-{context}
-
-SUMMARY FROM PREVIOUS ITERATION:
-{fourth_response}
-
-TASK: {specific_prompt}
-
-IMPORTANT INSTRUCTIONS:
-1. Be extremely specific - only identify red flags that directly match this criterion: {criteria_name}
-2. Look for quantitative data, specific amounts, percentages, or ratios
-3. Do not count general mentions - only specific indicators with data
-4. If no specific data found for this criterion, mark as Not_Applicable
-5. Avoid duplication - focus only on this specific criterion
-6. Maximum ONE red flag summary allowed for this criterion
-
-ANSWER:"""
-    
-    return llm._call(full_prompt, max_tokens=800)
-
 def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
                                      output_folder: str = "results", 
                                      api_key: str = None, azure_endpoint: str = None, 
                                      api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process a single PDF through the 5-iteration pipeline with individual criteria evaluation using Azure OpenAI
+    Process a single PDF through the NEW 5-iteration pipeline using Azure OpenAI
     """
    
     # Create output folder if it doesn't exist
@@ -1258,7 +658,7 @@ def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, pre
     print("=" * 50)
    
     try:
-        # ITERATION 1: Initial red flag identification
+        # ITERATION 1: Initial red flag identification (NO CHANGES)
         print("Running 1st iteration - Initial Analysis...")
         pipeline_1st = LlamaQueryPipeline(
             pdf_path=pdf_path,
@@ -1275,9 +675,9 @@ def process_single_pdf_five_iterations(pdf_path: str, queries_csv_path: str, pre
         # Get first response for chaining
         first_response = first_results_df.iloc[0]['response']
        
-        # ITERATION 2: Deduplication and cleanup
+        # ITERATION 2: Deduplication and cleanup (NO CHANGES)
         print("Running 2nd iteration - Deduplication...")
-        second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them."""
+        second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them.Do not lose data if duplicates are not found."""
        
         second_full_prompt = f"""You must answer the question strictly based on the below given context.
  
@@ -1292,7 +692,7 @@ Answer:"""
        
         second_response = pipeline_1st.llm._call(second_full_prompt, max_tokens=4000)
        
-        # ITERATION 3: Categorization of red flags
+        # ITERATION 3: Categorization of red flags (NO CHANGES)
         print("Running 3rd iteration - Categorization...")
         third_prompt = """You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
  
@@ -1355,7 +755,7 @@ Answer:"""
        
         third_response = pipeline_1st.llm._call(third_full_prompt, max_tokens=4000)
        
-        # ITERATION 4: Detailed summary generation
+        # ITERATION 4: Detailed summary generation (NO CHANGES)
         print("Running 4th iteration - Summary Generation...")
         fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags in bullet point format. Follow these guidelines:
  
@@ -1415,100 +815,88 @@ Answer:"""
        
         fourth_response = pipeline_1st.llm._call(fourth_full_prompt, max_tokens=4000)
        
-        # ITERATION 5: Individual Risk Classification for 15 Criteria
-        print("Running 5th iteration - Individual Criteria Risk Classification...")
+        # NEW ITERATION 5: Extract unique flags and classify against 15 criteria
+        print("Running 5th iteration - NEW METHOD: Unique Flags Classification...")
         
+        # Step 1: Extract unique flags from 2nd iteration
+        print("  Step 1: Extracting unique flags from 2nd iteration...")
+        unique_flags = extract_unique_flags_from_second_iteration(second_response, pipeline_1st.llm)
+        print(f"  Found {len(unique_flags)} unique flags")
+        
+        # Step 2: Define the 15 criteria
         criteria_definitions = {
-            "debt_increase": "High: Debt increase by >=40% compared to previous reported b/s number; Medium: Debt increase between 25 to 40% compared to previous reported b/s number; Low: Debt increase is less than 25% compared to previous reported b/s number",
-            "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Medium: provisioning or write-offs between 10 to 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 10% of current quarter's EBIDTA",
-            "asset_decline": "High: Asset value falls by >=40% compared to previous reported b/s number; Medium: Asset value falls between 25% to 40% compared to previous reported b/s number; Low: Asset value falls by less than 25% compared to previous reported b/s number",
-            "receivable_days": "High: receivable days increase by >=40% compared to previous reported b/s number; Medium: receivable days increase between 25 to 40% compared to previous reported b/s number; Low: receivable days increase is less than 25% compared to previous reported b/s number",
-            "payable_days": "High: payable days increase by >=40% compared to previous reported b/s number; Medium: payable days increase between 25 to 40% compared to previous reported b/s number; Low: payable days increase is less than 25% compared to previous reported b/s number",
-            "debt_ebitda": "High: Debt/EBITDA > 4x; Medium: Debt/EBITDA 2-4x; Low: Debt/EBITDA < 2x",
-            "revenue_decline": "High: revenue or profitability falls by >=25% compared to previous reported quarter number; Medium: revenue or profitability falls between 10% to 25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 10% compared to previous reported quarter number",
-            "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Medium: one-time expenses or losses between 10 to 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 10% of current quarter's EBIDTA",
-            "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Medium: gross margin or operating margin falling between 10 to 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 10% compared to previous reported quarter number",
-            "cash_balance": "High: cash balance falling more than 25% compared to previous reported b/s number; Medium: cash balance falling between 10 to 25% compared to previous reported b/s number; Low: cash balance falling less than 10% compared to previous reported b/s number",
-            "short_term_debt": "High: Short-term debt or current liabilities increase by >=40% compared to previous reported b/s number; Medium: Short-term debt or current liabilities increase between 25 to 40% compared to previous reported b/s number; Low: Short-term debt or current liabilities increase is less than 25% compared to previous reported b/s number",
+            "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
+            "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
+            "asset_decline": "High: Asset value falls by >=30% compared to previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
+            "receivable_days": "High: receivable days increase by >=30% compared to previous reported balance sheet number; Low: receivable days increase is less than 30% compared to previous reported balance sheet number",
+            "payable_days": "High: payable days increase by >=30% compared to previous reported balance sheet number; Low: payable days increase is less than 30% compared to previous reported balance sheet number",
+            "debt_ebitda": "High: Debt/EBITDA >= 3x; Low: Debt/EBITDA < 3x",
+            "revenue_decline": "High: revenue or profitability falls by >=25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
+            "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 25% of current quarter's EBIDTA",
+            "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 25% compared to previous reported quarter number",
+            "cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number",
+            "short_term_debt": "High: Short-term debt or current liabilities increase by >=30% compared to previous reported balance sheet number; Low: Short-term debt or current liabilities increase is less than 30% compared to previous reported balance sheet number",
             "management_issues": "High: Any management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates; Low: No management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates",
-            "regulatory_compliance": "High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators ;Low: if there is a no clear concern for the company basis the discussion on the regulatory issues ",
-            "market_competition": "High: Any competitive intensity or new entrants, Any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: : if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues ; Low: if there is a no clear concern for the company basis the discussion on the operational or supply chain issues "
+            "regulatory_compliance": "High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: if there is a no clear concern for the company basis the discussion on the regulatory issues",
+            "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
+            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
         }
         
-        # Process each criterion individually and collect results separately
-        individual_risk_results = {}
-        high_risk_summaries = set()  # Global set to track unique high-risk summaries
-        total_counts = {'High': 0, 'Medium': 0, 'Low': 0}
-        fifth_results = []
+        # Step 3: Classify each unique flag against the 15 criteria
+        print("  Step 2: Classifying each flag against 15 criteria...")
+        classification_results = []
+        high_risk_flags = []
+        low_risk_flags = []
         
-        for criteria_name, criteria_description in criteria_definitions.items():
-            print(f"Evaluating criterion: {criteria_name}")
+        for i, flag in enumerate(unique_flags, 1):
+            print(f"    Classifying flag {i}/{len(unique_flags)}: {flag[:50]}...")
             
-            # Get individual criterion response
-            criterion_response = evaluate_individual_criteria(
-                llm=pipeline_1st.llm,
-                context=pipeline_1st.docs[0]["context"],
-                fourth_response=fourth_response,
+            classification = classify_flag_against_criteria(
+                flag=flag,
+                criteria_definitions=criteria_definitions,
                 previous_year_data=previous_year_data,
-                criteria_name=criteria_name,
-                criteria_description=criteria_description
+                llm=pipeline_1st.llm
             )
             
-            # Parse this individual response
-            individual_risk_data = parse_individual_criterion_response(criterion_response, criteria_name)
-            individual_risk_results[criteria_name] = individual_risk_data
-            
-            # Store individual results for detailed breakdown
-            fifth_results.append({
-                "criteria": criteria_name,
-                "description": criteria_description,
-                "classification_response": criterion_response,
-                "parsed_data": individual_risk_data
+            classification_results.append({
+                'flag': flag,
+                'matched_criteria': classification['matched_criteria'],
+                'risk_level': classification['risk_level'],
+                'reasoning': classification['reasoning']
             })
             
-            # Aggregate unique high-risk summaries
-            for summary in individual_risk_data.get('High', []):
-                summary_clean = summary.strip()
-                if summary_clean:  # Only add non-empty summaries
-                    high_risk_summaries.add(summary_clean)
+            # Categorize flags by risk level
+            if classification['risk_level'].lower() == 'high':
+                high_risk_flags.append(flag)
+            else:
+                low_risk_flags.append(flag)
             
-            # Aggregate counts
-            for risk_level in ['High', 'Medium', 'Low']:
-                total_counts[risk_level] += individual_risk_data['counts'].get(risk_level, 0)
-            
-            time.sleep(1)  # API rate limiting
+            # Small delay to avoid overwhelming the API
+            time.sleep(0.5)
         
-        print(f"\n=== FINAL DEDUPLICATION SUMMARY ===")
-        print(f"Total unique high-risk summaries: {len(high_risk_summaries)}")
-        print(f"Total high-risk count: {total_counts['High']}")
-        print(f"High-risk summaries: {list(high_risk_summaries)}")
-        print("=" * 50)
-        
-        # Combine results
-        risk_data = {
-            'High': list(high_risk_summaries),
-            'Medium': [],
-            'Low': [],
-            'counts': total_counts,
-            'individual_results': individual_risk_results  # Keep detailed breakdown
+        # Step 4: Calculate counts
+        risk_counts = {
+            'High': len(high_risk_flags),
+            'Low': len(low_risk_flags),
+            'Total': len(unique_flags)
         }
-       
+        
+        print(f"  Classification complete: {risk_counts['High']} High, {risk_counts['Low']} Low, {risk_counts['Total']} Total")
+        
         # Extract company information from first page
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
-        print(f"Identified company: {company_info}")
-       
-        # Parse summary by categories
-        print("Parsing summary by categories...")
+        
+        # Parse 4th iteration summary for Word document
         summary_by_categories = parse_summary_by_categories(fourth_response)
        
-        # Create Word document
+        # Create Word document with new structure
         print("Creating Word document...")
         word_doc_path = create_word_document(
             pdf_name=pdf_name,
             company_info=company_info,
-            risk_data=risk_data,
+            risk_counts=risk_counts,
+            high_risk_flags=high_risk_flags,
             summary_by_categories=summary_by_categories,
             output_folder=output_folder
         )
@@ -1523,21 +911,21 @@ Answer:"""
                 "Deduplication",
                 "Categorization",
                 "Summary Generation",
-                "Individual Criteria Risk Classification"
+                "NEW: Unique Flags Classification"
             ],
             "prompt": [
                 first_results_df.iloc[0]['query'],  # Original query from 1st iteration
                 second_prompt,
                 third_prompt,
                 fourth_prompt,
-                "Individual Risk Classification for 15 criteria"
+                f"NEW METHOD: Extracted {len(unique_flags)} unique flags and classified against 15 criteria"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Individual results processed separately - see detailed breakdown file"
+                f"Classification Results: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags"
             ],
             "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
         })
@@ -1546,16 +934,17 @@ Answer:"""
         complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_5iteration_pipeline_results.csv")
         all_results.to_csv(complete_output_file, index=False)
        
-        # Save individual risk classification results with detailed breakdown
-        detailed_risk_df = pd.DataFrame(fifth_results)
-        detailed_risk_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_risk_classification.csv")
-        detailed_risk_df.to_csv(detailed_risk_output_file, index=False)
-       
-        print(f"Complete 5-iteration pipeline finished for {pdf_name}!")
+        # Save detailed classification results
+        detailed_classification_df = pd.DataFrame(classification_results)
+        detailed_classification_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_flag_classification.csv")
+        detailed_classification_df.to_csv(detailed_classification_output_file, index=False)
+
+        print(f"NEW 5-iteration pipeline finished for {pdf_name}!")
         print(f"CSV Results saved to: {complete_output_file}")
-        print(f"Detailed risk classification saved to: {detailed_risk_output_file}")
+        print(f"Detailed classification saved to: {detailed_classification_output_file}")
         print(f"Word document saved to: {word_doc_path}")
-       
+        print(f"Risk Distribution: {risk_counts['High']} High, {risk_counts['Low']} Low, {risk_counts['Total']} Total")
+
         return all_results
        
     except Exception as e:
@@ -1569,14 +958,13 @@ Answer:"""
         error_file = os.path.join(output_folder, f"{pdf_name}_error_log.csv")
         error_df.to_csv(error_file, index=False)
         return None
-
  
 def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, 
                                               output_folder: str = "results",
                                               api_key: str = None, azure_endpoint: str = None, 
                                               api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process multiple PDFs from a folder through the 5-iteration pipeline with individual criteria evaluation using Azure OpenAI
+    Process multiple PDFs from a folder through the NEW 5-iteration pipeline using Azure OpenAI
    
     Args:
         pdf_folder_path: Path to folder containing PDF files
@@ -1603,7 +991,7 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
     for pdf_file in pdf_files:
         print(f"  - {os.path.basename(pdf_file)}")
    
-    print(f"\nStarting batch processing with 5 iterations and 15 individual criteria using Azure OpenAI GPT-4.1-mini...")
+    print(f"\nStarting NEW batch processing with 5 iterations using unique flags classification...")
     print(f"Output folder: {output_folder}")
     print("=" * 60)
    
@@ -1635,47 +1023,62 @@ def run_multiple_pdfs_five_iterations_pipeline(pdf_folder_path: str, queries_csv
             print(f"Failed to process {os.path.basename(pdf_file)}: {str(e)}")
             failed_processing.append(os.path.basename(pdf_file))
    
+    print("\n" + "=" * 60)
+    print("BATCH PROCESSING COMPLETE")
+    print("=" * 60)
+    
     if successful_processing:
-        print(f"\nSuccessfully processed:")
+        print(f"\nSuccessfully processed ({len(successful_processing)}):")
         for file in successful_processing:
             print(f"  ✓ {file}")
    
     if failed_processing:
-        print(f"\nFailed to process:")
+        print(f"\nFailed to process ({len(failed_processing)}):")
         for file in failed_processing:
             print(f"  ✗ {file}")
 
 def main_batch_processing_five_iterations():
     """
-    Main function to run the batch processing with Azure OpenAI GPT-4.1-mini
+    Main function to run the NEW batch processing with Azure OpenAI GPT-4.1-mini
     Configure your Azure OpenAI credentials here
     """
     
     # Configuration
     pdf_folder_path = r"ola_pdf"
     queries_csv_path = r"EWS_prompts_v2.xlsx"      
-    output_folder = r"ola_results_individual_criteria_azure_openai"
+    output_folder = r"ola_results_NEW_unique_flags_classification"
     
-    # Azure OpenAI Configuration
-    # Method 1: Pass directly (replace with your actual values)
-    api_key = "8496bd"
-    azure_endpoint = "htt"
+    api_key = "8496bd1da40242a29de18fe1361e498c"
+    azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1-mini"
   
     previous_year_data = """
-Previous reported Debt	 5,684 Cr	Mar-24
-Current quarter ebidta	 (525) Cr	Mar-25
-Previous reported asset value	 7,735 Cr	Mar-24
-Previous reported receivable days	12 days	Mar-24
-Previous reported payable days	112days	Mar-24
-Previous reported revenue	 1,045 Cr	Dec-24
-Previous reported profitability	 (460)Cr	Dec-24
-Previous reported operating margin	-44.00%	Dec-24
-Previous reported cash balance	 1,663 Cr	Mar-24
-Previous reported current liabilities	 1,071 Cr	Mar-24 
+Previous reported Debt 5,684 Cr Mar-24
+Current quarter ebidta (525)Cr Mar-25
+Previous reported asset value 7,735Cr Mar-24
+Previous reported receivable days 12 days Mar-24
+Previous reported payable days 112 days Mar-24
+Previous reported revenue 1,045 Cr Dec-24
+Previous reported profitability (460) Cr Dec-24
+Previous reported operating margin -44.00% Dec-24
+Previous reported cash balance 1,663 Cr Mar-24
+Previous reported current liabilities 1,071 Cr Mar-24
+
 """
  
+    print("=" * 60)
+    print("NEW 5-ITERATION PIPELINE WITH UNIQUE FLAGS CLASSIFICATION")
+    print("=" * 60)
+    print("Changes implemented:")
+    print("1. Iterations 1-4: No changes (same as before)")
+    print("2. NEW Iteration 5:")
+    print("   - Extract unique flags from 2nd iteration")
+    print("   - Classify each flag against 15 criteria")
+    print("   - Auto-assign 'Low' risk if no criteria match")
+    print("3. Word document: Count + High flags + 4th iteration summary")
+    print("=" * 60)
+    
     run_multiple_pdfs_five_iterations_pipeline(
         pdf_folder_path=pdf_folder_path,
         queries_csv_path=queries_csv_path,
