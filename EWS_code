@@ -119,356 +119,6 @@ def mergeDocs(pdf_path: str, split_pages: bool = False) -> List[Dict[str, Any]]:
         # Merge all pages into single context
         all_text = "\n".join([page["text"] for page in pages])
         return [{"context": all_text}]
-
-# Keyword-based classification definitions
-CRITERIA_KEYWORDS = {
-    "debt_increase": {
-        "primary": ["debt", "borrowing", "loan", "leverage", "borrowed", "liability", "liabilities"],
-        "context": ["increased", "higher", "additional", "new", "rose", "went up", "more", "growth", "expansion"],
-        "financial_terms": ["term loan", "credit facility", "borrowings", "debt level", "total debt", "long-term debt"]
-    },
-    "provisioning": {
-        "primary": ["provision", "write-off", "write off", "impairment", "bad debt", "credit loss"],
-        "context": ["increased", "higher", "additional", "new", "substantial", "significant"],
-        "financial_terms": ["provision for", "written off", "impaired", "doubtful debt", "NPA", "bad loans"]
-    },
-    "asset_decline": {
-        "primary": ["asset", "assets", "asset value", "fixed asset", "investment"],
-        "context": ["declined", "fell", "reduced", "lower", "decreased", "impaired", "written down"],
-        "financial_terms": ["asset impairment", "asset write-down", "depreciation", "asset disposal"]
-    },
-    "receivable_days": {
-        "primary": ["receivable", "receivables", "accounts receivable", "debtor", "debtors"],
-        "context": ["days", "period", "increased", "higher", "extended", "longer"],
-        "financial_terms": ["receivable days", "collection period", "debtor days", "DSO"]
-    },
-    "payable_days": {
-        "primary": ["payable", "payables", "accounts payable", "creditor", "creditors"],
-        "context": ["days", "period", "increased", "higher", "extended", "longer"],
-        "financial_terms": ["payable days", "payment period", "creditor days", "DPO"]
-    },
-    "debt_ebitda": {
-        "primary": ["debt", "EBITDA", "leverage", "coverage"],
-        "context": ["ratio", "times", "multiple", "high", "increased"],
-        "financial_terms": ["debt/EBITDA", "debt to EBITDA", "leverage ratio", "debt ratio"]
-    },
-    "revenue_decline": {
-        "primary": ["revenue", "sales", "income", "turnover", "top line"],
-        "context": ["declined", "fell", "reduced", "lower", "decreased", "drop", "down"],
-        "financial_terms": ["revenue decline", "sales decline", "top-line decline"]
-    },
-    "onetime_expenses": {
-        "primary": ["one-time", "onetime", "exceptional", "extraordinary", "non-recurring"],
-        "context": ["expense", "expenses", "cost", "costs", "charge", "charges"],
-        "financial_terms": ["one-time charges", "exceptional items", "extraordinary expenses", "special items"]
-    },
-    "margin_decline": {
-        "primary": ["margin", "profitability", "gross margin", "operating margin", "EBITDA margin"],
-        "context": ["declined", "fell", "reduced", "pressure", "compression", "lower", "squeezed"],
-        "financial_terms": ["margin decline", "margin pressure", "profit margin", "operating leverage"]
-    },
-    "cash_balance": {
-        "primary": ["cash", "liquidity", "cash flow", "cash position", "cash balance"],
-        "context": ["declined", "reduced", "shortage", "crunch", "low", "negative", "poor"],
-        "financial_terms": ["working capital", "cash generation", "free cash flow", "cash conversion"]
-    },
-    "short_term_debt": {
-        "primary": ["short-term debt", "current liabilities", "short term", "working capital"],
-        "context": ["increased", "higher", "additional", "new", "rose", "went up"],
-        "financial_terms": ["current ratio", "quick ratio", "working capital loan", "short-term borrowing"]
-    },
-    "management_issues": {
-        "primary": ["management", "leadership", "CEO", "CFO", "board", "director", "executive"],
-        "context": ["change", "turnover", "departure", "resignation", "new", "replaced", "left"],
-        "financial_terms": ["management change", "leadership transition", "governance", "board changes"]
-    },
-    "regulatory_compliance": {
-        "primary": ["regulatory", "compliance", "regulation", "regulator", "legal", "law"],
-        "context": ["issue", "violation", "penalty", "fine", "warning", "notice", "action"],
-        "financial_terms": ["regulatory action", "compliance issue", "legal proceeding", "regulatory penalty"]
-    },
-    "market_competition": {
-        "primary": ["competition", "competitive", "competitor", "market", "industry"],
-        "context": ["pressure", "intense", "increased", "new", "entry", "share", "loss"],
-        "financial_terms": ["market share", "competitive pressure", "pricing pressure", "industry dynamics"]
-    },
-    "operational_disruptions": {
-        "primary": ["operational", "operation", "supply chain", "production", "manufacturing"],
-        "context": ["disruption", "issue", "problem", "failure", "breakdown", "inefficiency"],
-        "financial_terms": ["operational efficiency", "supply chain disruption", "production issues"]
-    }
-}
-
-def extract_red_flags_from_2nd_iteration(second_response: str) -> List[Dict[str, str]]:
-    """Extract structured red flags from 2nd iteration response"""
-    red_flags = []
-    
-    # Split by numbered red flags
-    sections = re.split(r'\n(?=\d+\.\s*The potential red flag)', second_response)
-    
-    for section in sections:
-        if not section.strip():
-            continue
-            
-        lines = section.strip().split('\n')
-        flag_data = {'description': '', 'original_quote': '', 'page_ref': ''}
-        
-        current_quote_lines = []
-        in_quote = False
-        
-        for line in lines:
-            line = line.strip()
-            
-            # Extract description
-            if re.match(r'^\d+\.\s*The potential red flag', line):
-                # Extract description after the dash
-                match = re.search(r'The potential red flag you observed\s*-\s*(.+)', line)
-                if match:
-                    flag_data['description'] = match.group(1).strip()
-            
-            # Extract original quote
-            elif line.startswith('Original Quote:'):
-                in_quote = True
-                quote_content = line.replace('Original Quote:', '').strip()
-                if quote_content:
-                    current_quote_lines.append(quote_content)
-            elif in_quote and line:
-                if line.startswith('(Page') or line.lower().startswith('page'):
-                    # End of quote, extract page reference
-                    flag_data['page_ref'] = line
-                    in_quote = False
-                else:
-                    current_quote_lines.append(line)
-        
-        # Combine quote lines
-        if current_quote_lines:
-            flag_data['original_quote'] = ' '.join(current_quote_lines).strip(' "')
-        
-        # Only add if we have a description
-        if flag_data['description']:
-            red_flags.append(flag_data)
-    
-    return red_flags
-
-def extract_numerical_values(text: str) -> Dict[str, List[float]]:
-    """Extract percentages and numerical values from text"""
-    percentages = []
-    amounts = []
-    
-    # Extract percentages
-    pct_pattern = r'(\d+(?:\.\d+)?)\s*%'
-    pct_matches = re.findall(pct_pattern, text)
-    percentages = [float(match) for match in pct_matches]
-    
-    # Extract financial amounts (crores, lakhs, etc.)
-    amount_pattern = r'(?:INR|Rs\.?|₹)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(crore|lakh|million|billion)?'
-    amount_matches = re.findall(amount_pattern, text, re.IGNORECASE)
-    
-    for amount_str, unit in amount_matches:
-        try:
-            amount = float(amount_str.replace(',', ''))
-            if unit.lower() in ['crore', 'crores']:
-                amount *= 10000000  # Convert to actual value
-            elif unit.lower() in ['lakh', 'lakhs']:
-                amount *= 100000
-            amounts.append(amount)
-        except:
-            continue
-    
-    return {'percentages': percentages, 'amounts': amounts}
-
-def calculate_keyword_match_score(text: str, keyword_groups: Dict[str, List[str]]) -> int:
-    """Calculate keyword match score for a text"""
-    score = 0
-    text_lower = text.lower()
-    
-    for group_name, keywords in keyword_groups.items():
-        for keyword in keywords:
-            if keyword.lower() in text_lower:
-                # Weight different groups differently
-                if group_name == 'primary':
-                    score += 3
-                elif group_name == 'financial_terms':
-                    score += 2
-                else:  # context
-                    score += 1
-    
-    return score
-
-def determine_risk_level_from_content(flag: Dict[str, str], criterion: str, previous_year_data: str) -> str:
-    """Determine High/Medium/Low based on content analysis and business rules"""
-    
-    text = f"{flag['description']} {flag['original_quote']}".lower()
-    numerical_data = extract_numerical_values(text)
-    
-    # Apply criterion-specific thresholds
-    if criterion == "debt_increase":
-        for pct in numerical_data['percentages']:
-            if pct >= 40:
-                return "high"
-            elif 25 <= pct < 40:
-                return "medium"
-            elif pct < 25:
-                return "low"
-    
-    elif criterion in ["margin_decline", "revenue_decline"]:
-        for pct in numerical_data['percentages']:
-            if pct >= 25:
-                return "high"
-            elif 10 <= pct < 25:
-                return "medium"
-            elif pct < 10:
-                return "low"
-    
-    elif criterion in ["asset_decline", "receivable_days", "payable_days", "short_term_debt"]:
-        for pct in numerical_data['percentages']:
-            if pct >= 40:
-                return "high"
-            elif 25 <= pct < 40:
-                return "medium"
-            elif pct < 25:
-                return "low"
-    
-    elif criterion == "cash_balance":
-        for pct in numerical_data['percentages']:
-            if pct >= 25:
-                return "high"
-            elif 10 <= pct < 25:
-                return "medium"
-            elif pct < 10:
-                return "low"
-    
-    elif criterion in ["provisioning", "onetime_expenses"]:
-        # These are typically high risk if mentioned significantly
-        if any(word in text for word in ["significant", "substantial", "major", "large"]):
-            return "high"
-        elif any(word in text for word in ["moderate", "some", "increase"]):
-            return "medium"
-        else:
-            return "low"
-    
-    # Qualitative severity analysis for other criteria
-    severity_indicators = {
-        "high": ["significant", "major", "substantial", "severe", "critical", "serious", "large", "big"],
-        "medium": ["moderate", "noticeable", "some", "partial", "moderate"],
-        "low": ["minor", "slight", "small", "minimal", "limited"]
-    }
-    
-    for level, indicators in severity_indicators.items():
-        if any(indicator in text for indicator in indicators):
-            return level
-    
-    # Default based on keyword match strength
-    return "low"
-
-def classify_red_flags_by_keywords(red_flags: List[Dict[str, str]], previous_year_data: str) -> Dict[str, Dict]:
-    """Classify each red flag into appropriate criteria using keyword matching"""
-    classification_results = {}
-    
-    # Initialize results for all criteria
-    for criterion in CRITERIA_KEYWORDS.keys():
-        classification_results[criterion] = {
-            'high_risk': [],
-            'medium_risk': [],
-            'low_risk': [],
-            'count': 0
-        }
-    
-    # Process each red flag
-    for flag in red_flags:
-        # Combine description and quote for analysis
-        full_text = f"{flag['description']} {flag['original_quote']}"
-        
-        # Check each criterion
-        for criterion, keyword_groups in CRITERIA_KEYWORDS.items():
-            match_score = calculate_keyword_match_score(full_text, keyword_groups)
-            
-            if match_score > 0:  # If any keywords match
-                # Determine risk level based on content analysis
-                risk_level = determine_risk_level_from_content(flag, criterion, previous_year_data)
-                
-                # Add to appropriate risk category
-                flag_entry = {
-                    'description': flag['description'],
-                    'original_quote': flag['original_quote'],
-                    'page_ref': flag['page_ref'],
-                    'match_score': match_score
-                }
-                
-                classification_results[criterion][f'{risk_level}_risk'].append(flag_entry)
-                classification_results[criterion]['count'] += 1
-    
-    return classification_results
-
-def generate_final_summary_keyword_based(classification_results: Dict[str, Dict]) -> Dict[str, Any]:
-    """Generate flag distribution and high-risk summary from keyword classification"""
-    
-    # Calculate flag distribution
-    flag_distribution = {
-        'High': 0, 'Medium': 0, 'Low': 0, 'Total': 0
-    }
-    
-    high_risk_flags = []
-    detailed_classification = {}
-    
-    for criterion, results in classification_results.items():
-        high_count = len(results['high_risk'])
-        medium_count = len(results['medium_risk'])
-        low_count = len(results['low_risk'])
-        
-        flag_distribution['High'] += high_count
-        flag_distribution['Medium'] += medium_count
-        flag_distribution['Low'] += low_count
-        
-        # Collect high-risk flag descriptions (unique ones only)
-        for high_flag in results['high_risk']:
-            flag_desc = high_flag['description']
-            if flag_desc not in [f['description'] for f in high_risk_flags]:
-                high_risk_flags.append({
-                    'description': flag_desc,
-                    'criterion': criterion,
-                    'original_quote': high_flag['original_quote'],
-                    'page_ref': high_flag['page_ref']
-                })
-        
-        # Store detailed classification
-        if high_count > 0 or medium_count > 0 or low_count > 0:
-            detailed_classification[criterion] = {
-                'high': high_count,
-                'medium': medium_count,
-                'low': low_count,
-                'total': high_count + medium_count + low_count
-            }
-    
-    flag_distribution['Total'] = flag_distribution['High'] + flag_distribution['Medium'] + flag_distribution['Low']
-    
-    return {
-        'flag_distribution': flag_distribution,
-        'high_risk_flags': high_risk_flags,
-        'detailed_classification': detailed_classification,
-        'full_classification_results': classification_results
-    }
-
-def streamlined_fifth_iteration(second_response: str, previous_year_data: str) -> Dict[str, Any]:
-    """
-    Complete 5th iteration using only 2nd response + keyword algorithm
-    NO LLM CALLS NEEDED!
-    """
-    
-    print("Extracting red flags from 2nd iteration response...")
-    # Step 1: Extract red flags from 2nd iteration
-    red_flags = extract_red_flags_from_2nd_iteration(second_response)
-    print(f"Found {len(red_flags)} red flags in 2nd iteration response")
-    
-    print("Classifying red flags using keyword algorithm...")
-    # Step 2: Classify using keyword algorithm
-    classification_results = classify_red_flags_by_keywords(red_flags, previous_year_data)
-    
-    print("Generating final summary...")
-    # Step 3: Generate summary
-    summary = generate_final_summary_keyword_based(classification_results)
-    
-    return summary
  
 class LlamaQueryPipeline:
     """Main pipeline class for querying PDF content with Azure OpenAI GPT-4.1-mini"""
@@ -516,7 +166,94 @@ class LlamaQueryPipeline:
         self.previous_results = None
         if previous_results_path and os.path.exists(previous_results_path):
             self.previous_results = pd.read_csv(previous_results_path)
-
+   
+    def query_llama_with_chaining(self, new_queries_csv_path: str, iteration_number: int = 2) -> pd.DataFrame:
+        """Query the Azure OpenAI API using previous results for chaining"""
+        if self.previous_results is None:
+            raise ValueError("No previous results loaded. Please provide previous_results_path in __init__")
+       
+        # Load new queries
+        if new_queries_csv_path.endswith('.xlsx'):
+            new_queries_df = pd.read_excel(new_queries_csv_path)
+        else:
+            new_queries_df = pd.read_csv(new_queries_csv_path)
+       
+        new_queries = new_queries_df["prompt"].tolist()
+       
+        sys_prompt = f"""You must answer the question strictly based on the below given context.
+ 
+Context:
+{self.docs[0]["context"]}
+ 
+"""
+       
+        results = []
+       
+        # Process each new query with corresponding previous response
+        for i, new_query in enumerate(new_queries):
+            start = time.perf_counter()
+           
+            try:
+                # Get the corresponding previous response (if available)
+                if i < len(self.previous_results):
+                    # Check if it's 3rd iteration (chained results) or 2nd iteration (original results)
+                    if 'chained_response' in self.previous_results.columns:
+                        previous_response = self.previous_results.iloc[i]['chained_response']
+                    else:
+                        previous_response = self.previous_results.iloc[i]['response']
+                   
+                    # Create chained prompt: new query + previous response
+                    chained_prompt = f"""Previous Analysis: {previous_response}
+ 
+Based on the above analysis and the original context, please answer: {new_query}
+ 
+Answer:"""
+                else:
+                    # If no previous response available, use regular prompt
+                    chained_prompt = f"""Question: {new_query}
+Answer:"""
+               
+                full_prompt = f"{sys_prompt}\n{chained_prompt}"
+               
+                # Get response from Azure OpenAI
+                response_text = self.llm._call(full_prompt, max_tokens=4000)
+                end = time.perf_counter()
+               
+                # Calculate token approximations (more accurate with OpenAI response)
+                input_tokens = len(full_prompt.split())
+                completion_tokens = len(response_text.split()) if response_text else 0
+               
+                usage = {
+                    "iteration": iteration_number,
+                    "query_id": i + 1,
+                    "original_query": new_queries_df.iloc[i]["prompt"] if i < len(new_queries_df) else new_query,
+                    "previous_response": previous_response if i < len(self.previous_results) else "",
+                    "new_query": new_query,
+                    "chained_response": response_text,
+                    "completion_tokens": completion_tokens,
+                    "input_tokens": input_tokens,
+                    "response_time": f"{end - start:.2f}"
+                }
+               
+            except Exception as e:
+                end = time.perf_counter()
+               
+                usage = {
+                    "iteration": iteration_number,
+                    "query_id": i + 1,
+                    "original_query": new_queries_df.iloc[i]["prompt"] if i < len(new_queries_df) else new_query,
+                    "previous_response": previous_response if i < len(self.previous_results) else "",
+                    "new_query": new_query,
+                    "chained_response": f"Error: {str(e)}",
+                    "completion_tokens": None,
+                    "input_tokens": None,
+                    "response_time": f"{end - start:.2f}"
+                }
+           
+            results.append(usage)
+       
+        return pd.DataFrame(results)
+ 
     def query_llama(self, maintain_conversation: bool = True, enable_chaining: bool = False) -> pd.DataFrame:
         """Query the Azure OpenAI API for a list of queries using the provided context"""
         sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
@@ -678,42 +415,505 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
-    """Parse the 4th iteration summary response by categories"""
-    categories_summary = {}
-   
-    # Split by ### headers
-    sections = fourth_response.split('###')
-   
-    for section in sections:
-        if not section.strip():
+def remove_duplicates_from_response(response_text: str) -> str:
+    """Remove duplicate red flags based on content similarity"""
+    lines = response_text.split('\n')
+    unique_flags = []
+    seen_descriptions = set()
+    
+    current_flag = ""
+    current_description = ""
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Check if this is a new red flag (starts with number)
+        if re.match(r'^\d+\.', line):
+            # Process previous flag if exists
+            if current_flag and current_description:
+                # Create a normalized version for comparison
+                normalized_desc = re.sub(r'[^\w\s]', '', current_description.lower())
+                normalized_desc = ' '.join(normalized_desc.split())
+                
+                # Check for duplicates based on description similarity
+                is_duplicate = False
+                for seen_desc in seen_descriptions:
+                    # Calculate similarity (simple word overlap)
+                    words1 = set(normalized_desc.split())
+                    words2 = set(seen_desc.split())
+                    overlap = len(words1.intersection(words2))
+                    total = len(words1.union(words2))
+                    similarity = overlap / total if total > 0 else 0
+                    
+                    if similarity > 0.7:  # 70% similarity threshold
+                        is_duplicate = True
+                        break
+                
+                if not is_duplicate:
+                    unique_flags.append(current_flag)
+                    seen_descriptions.add(normalized_desc)
+            
+            # Start new flag
+            current_flag = line + '\n'
+            # Extract description from the flag line
+            desc_match = re.search(r'The potential red flag you observed - (.+)', line)
+            current_description = desc_match.group(1) if desc_match else ""
+            
+        else:
+            # Continue building current flag
+            current_flag += line + '\n'
+    
+    # Don't forget the last flag
+    if current_flag and current_description:
+        normalized_desc = re.sub(r'[^\w\s]', '', current_description.lower())
+        normalized_desc = ' '.join(normalized_desc.split())
+        
+        is_duplicate = False
+        for seen_desc in seen_descriptions:
+            words1 = set(normalized_desc.split())
+            words2 = set(seen_desc.split())
+            overlap = len(words1.intersection(words2))
+            total = len(words1.union(words2))
+            similarity = overlap / total if total > 0 else 0
+            
+            if similarity > 0.7:
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            unique_flags.append(current_flag)
+    
+    return '\n'.join(unique_flags)
+
+def create_individual_criteria_prompts() -> Dict[str, str]:
+    """Create 15 individual prompts for different criteria evaluation"""
+    
+    criteria_prompts = {
+        "debt_increase": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to debt increases.
+
+Look for:
+- Total debt increases compared to previous periods
+- Long-term debt changes
+- Borrowing increases
+- Debt restructuring issues
+
+Classification levels:
+- High: Debt increase by >=40% compared to previous reported balance sheet number
+- Medium: Debt increase between 25 to 40% compared to previous reported balance sheet number  
+- Low: Debt increase is less than 25% compared to previous reported balance sheet number
+- Not_Applicable: No debt increase red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Debt Increase Risk Assessment:**
+Summary: [Brief summary of debt-related concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "provisioning": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to provisioning and write-offs.
+
+Look for:
+- Provisioning for bad debts
+- Write-offs mentioned
+- Impairment charges
+- Credit loss provisions
+
+Classification levels:
+- High: Provisioning or write-offs more than 25% of current quarter's EBITDA
+- Medium: Provisioning or write-offs between 10 to 25% of current quarter's EBITDA
+- Low: Provisioning or write-offs less than 10% of current quarter's EBITDA
+- Not_Applicable: No provisioning red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Provisioning Risk Assessment:**
+Summary: [Brief summary of provisioning-related concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "asset_decline": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to asset value decline.
+
+Look for:
+- Asset value decreases
+- Asset impairment
+- Fixed asset write-downs
+- Investment value declines
+
+Classification levels:
+- High: Asset value falls by >=40% compared to previous reported balance sheet number
+- Medium: Asset value falls between 25% to 40% compared to previous reported balance sheet number
+- Low: Asset value falls by less than 25% compared to previous reported balance sheet number
+- Not_Applicable: No asset decline red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Asset Decline Risk Assessment:**
+Summary: [Brief summary of asset decline concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "receivable_days": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to receivable days increase.
+
+Look for:
+- Receivable days increase
+- Collection period extension
+- Accounts receivable growth
+- Customer payment delays
+
+Classification levels:
+- High: Receivable days increase by >=40% compared to previous reported balance sheet number
+- Medium: Receivable days increase between 25 to 40% compared to previous reported balance sheet number
+- Low: Receivable days increase is less than 25% compared to previous reported balance sheet number
+- Not_Applicable: No receivable days red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Receivable Days Risk Assessment:**
+Summary: [Brief summary of receivable days concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "payable_days": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to payable days increase.
+
+Look for:
+- Payable days increase
+- Payment period extension
+- Accounts payable growth
+- Supplier payment delays
+
+Classification levels:
+- High: Payable days increase by >=40% compared to previous reported balance sheet number
+- Medium: Payable days increase between 25 to 40% compared to previous reported balance sheet number
+- Low: Payable days increase is less than 25% compared to previous reported balance sheet number
+- Not_Applicable: No payable days red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Payable Days Risk Assessment:**
+Summary: [Brief summary of payable days concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "debt_ebitda": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to debt-to-EBITDA ratio.
+
+Look for:
+- Debt/EBITDA ratio mentions
+- High leverage concerns
+- Coverage ratio issues
+- Debt serviceability problems
+
+Classification levels:
+- High: Debt/EBITDA > 4x
+- Medium: Debt/EBITDA 2-4x
+- Low: Debt/EBITDA < 2x
+- Not_Applicable: No debt/EBITDA red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Debt EBITDA Risk Assessment:**
+Summary: [Brief summary of debt/EBITDA concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "revenue_decline": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to revenue decline.
+
+Look for:
+- Revenue decreases
+- Sales decline
+- Top-line reduction
+- Income statement revenue issues
+
+Classification levels:
+- High: Revenue or profitability falls by >=25% compared to previous reported quarter number
+- Medium: Revenue or profitability falls between 10% to 25% compared to previous reported quarter number
+- Low: Revenue or profitability falls by less than 10% compared to previous reported quarter number
+- Not_Applicable: No revenue decline red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Revenue Decline Risk Assessment:**
+Summary: [Brief summary of revenue decline concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "onetime_expenses": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to one-time expenses.
+
+Look for:
+- One-time charges
+- Exceptional expenses
+- Non-recurring costs
+- Special items or extraordinary expenses
+
+Classification levels:
+- High: One-time expenses or losses more than 25% of current quarter's EBITDA
+- Medium: One-time expenses or losses between 10 to 25% of current quarter's EBITDA
+- Low: One-time expenses or losses less than 10% of current quarter's EBITDA
+- Not_Applicable: No one-time expenses red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**One-time Expenses Risk Assessment:**
+Summary: [Brief summary of one-time expenses concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "margin_decline": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to margin decline.
+
+Look for:
+- Gross margin decline
+- Operating margin compression
+- EBITDA margin reduction
+- Profitability margin issues
+
+Classification levels:
+- High: Gross margin or operating margin falling more than 25% compared to previous reported quarter number
+- Medium: Gross margin or operating margin falling between 10 to 25% compared to previous reported quarter number
+- Low: Gross margin or operating margin falling less than 10% compared to previous reported quarter number
+- Not_Applicable: No margin decline red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Margin Decline Risk Assessment:**
+Summary: [Brief summary of margin decline concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "cash_balance": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to cash balance decline.
+
+Look for:
+- Cash balance decreases
+- Cash flow negative trends
+- Liquidity reduction
+- Cash position deterioration
+
+Classification levels:
+- High: Cash balance falling more than 25% compared to previous reported balance sheet number
+- Medium: Cash balance falling between 10 to 25% compared to previous reported balance sheet number
+- Low: Cash balance falling less than 10% compared to previous reported balance sheet number
+- Not_Applicable: No cash balance red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Cash Balance Risk Assessment:**
+Summary: [Brief summary of cash balance concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "short_term_debt": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to short-term debt increase.
+
+Look for:
+- Short-term debt increases
+- Current liabilities growth
+- Working capital issues
+- Short-term borrowing increases
+
+Classification levels:
+- High: Short-term debt or current liabilities increase by >=40% compared to previous reported balance sheet number
+- Medium: Short-term debt or current liabilities increase between 25 to 40% compared to previous reported balance sheet number
+- Low: Short-term debt or current liabilities increase is less than 25% compared to previous reported balance sheet number
+- Not_Applicable: No short-term debt red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Short-term Debt Risk Assessment:**
+Summary: [Brief summary of short-term debt concerns if any]
+Risk Level: [High/Medium/Low/Not_Applicable]
+""",
+
+        "management_issues": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to management and leadership issues.
+
+Look for:
+- Management turnover
+- Key personnel departures
+- Leadership changes
+- Governance issues
+- Strategic execution problems
+
+Classification levels:
+- High: Any management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates
+- Low: No management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates
+- Not_Applicable: No management issues red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Management Issues Risk Assessment:**
+Summary: [Brief summary of management concerns if any]
+Risk Level: [High/Low/Not_Applicable]
+""",
+
+        "regulatory_compliance": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to regulatory compliance.
+
+Look for:
+- Regulatory violations
+- Compliance issues
+- Legal problems
+- Regulatory warnings or penalties
+
+Classification levels:
+- High: If found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators
+- Low: If there is no clear concern for the company based on the discussion on the regulatory issues
+- Not_Applicable: No regulatory compliance red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Regulatory Compliance Risk Assessment:**
+Summary: [Brief summary of regulatory concerns if any]
+Risk Level: [High/Low/Not_Applicable]
+""",
+
+        "market_competition": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to market competition.
+
+Look for:
+- Competitive pressure
+- Market share loss
+- New competitors entering
+- Industry competition intensifying
+
+Classification levels:
+- High: Any competitive intensity or new entrants, Any decline in market share
+- Low: Low competitive intensity or new entrants, Stable or increasing market share
+- Not_Applicable: No market competition red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Market Competition Risk Assessment:**
+Summary: [Brief summary of competition concerns if any]
+Risk Level: [High/Low/Not_Applicable]
+""",
+
+        "operational_disruptions": """
+Based on the deduplicated red flags analysis, evaluate if there are any red flags specifically related to operational disruptions.
+
+Look for:
+- Supply chain disruptions
+- Production issues
+- IT system failures
+- Operational inefficiencies
+- Infrastructure problems
+
+Classification levels:
+- High: If found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues
+- Low: If there is no clear concern for the company based on the discussion on the operational or supply chain issues
+- Not_Applicable: No operational disruption red flags found
+
+Provide a brief summary (without original quotes) and classify the risk level.
+
+Format:
+**Operational Disruptions Risk Assessment:**
+Summary: [Brief summary of operational concerns if any]
+Risk Level: [High/Low/Not_Applicable]
+"""
+    }
+    
+    return criteria_prompts
+
+def parse_individual_risk_assessment(response_text: str) -> Dict[str, Any]:
+    """Parse individual risk assessment response to extract summary and risk level"""
+    
+    # Extract summary
+    summary_match = re.search(r'Summary:\s*(.+?)(?=Risk Level:|$)', response_text, re.DOTALL)
+    summary = summary_match.group(1).strip() if summary_match else "No summary provided"
+    
+    # Extract risk level
+    risk_level_match = re.search(r'Risk Level:\s*([^\n]+)', response_text)
+    risk_level = risk_level_match.group(1).strip() if risk_level_match else "Not_Applicable"
+    
+    # Clean up the risk level
+    risk_level = risk_level.replace('[', '').replace(']', '').strip()
+    
+    return {
+        'summary': summary,
+        'risk_level': risk_level
+    }
+
+def calculate_flag_distribution(criteria_results: List[Dict]) -> Dict[str, int]:
+    """Calculate flag distribution from individual criteria results"""
+    
+    distribution = {
+        'High': 0,
+        'Medium': 0,
+        'Low': 0,
+        'Not_Applicable': 0
+    }
+    
+    for result in criteria_results:
+        risk_level = result.get('parsed_result', {}).get('risk_level', 'Not_Applicable')
+        
+        # Normalize risk level
+        if 'High' in risk_level:
+            distribution['High'] += 1
+        elif 'Medium' in risk_level:
+            distribution['Medium'] += 1
+        elif 'Low' in risk_level:
+            distribution['Low'] += 1
+        else:
+            distribution['Not_Applicable'] += 1
+    
+    return distribution
+
+def create_enhanced_summary(criteria_results: List[Dict]) -> Dict[str, List[str]]:
+    """Create enhanced summary by risk categories"""
+    
+    summary_by_risk = {
+        'High Risk Flags': [],
+        'Medium Risk Flags': [],
+        'Low Risk Flags': []
+    }
+    
+    for result in criteria_results:
+        criteria_name = result.get('criteria', 'Unknown')
+        parsed = result.get('parsed_result', {})
+        risk_level = parsed.get('risk_level', 'Not_Applicable')
+        summary = parsed.get('summary', 'No summary available')
+        
+        # Skip if no actual concern found
+        if 'Not_Applicable' in risk_level or 'No' in summary:
             continue
-           
-        lines = section.split('\n')
-        category_name = ""
-        bullets = []
-       
-        for line in lines:
-            line = line.strip()
-            if line and not line.startswith('*') and not line.startswith('-'):
-                # This is likely the category name
-                category_name = line.strip()
-            elif line.startswith('*') or line.startswith('-'):
-                # This is a bullet point
-                bullet_text = line[1:].strip()  # Remove bullet symbol
-                if bullet_text:
-                    bullets.append(bullet_text)
-       
-        if category_name and bullets:
-            categories_summary[category_name] = bullets
-   
-    return categories_summary
- 
-def create_word_document_keyword_based(pdf_name: str, company_info: str, 
-                                     keyword_summary: Dict[str, Any],
-                                     summary_by_categories: Dict[str, List[str]], 
-                                     output_folder: str) -> str:
-    """Create a formatted Word document with the keyword-based analysis results"""
+            
+        # Format the summary entry
+        formatted_summary = f"{criteria_name.replace('_', ' ').title()}: {summary}"
+        
+        # Categorize by risk level
+        if 'High' in risk_level:
+            summary_by_risk['High Risk Flags'].append(formatted_summary)
+        elif 'Medium' in risk_level:
+            summary_by_risk['Medium Risk Flags'].append(formatted_summary)
+        elif 'Low' in risk_level:
+            summary_by_risk['Low Risk Flags'].append(formatted_summary)
+    
+    return summary_by_risk
+
+def create_enhanced_word_document(pdf_name: str, company_info: str, flag_distribution: Dict[str, int],
+                                enhanced_summary: Dict[str, List[str]], output_folder: str) -> str:
+    """Create an enhanced formatted Word document with the analysis results"""
    
     # Create new document
     doc = Document()
@@ -727,110 +927,61 @@ def create_word_document_keyword_based(pdf_name: str, company_info: str,
     flag_dist_heading.runs[0].bold = True
    
     # Create table for flag distribution
-    table = doc.add_table(rows=4, cols=2)
+    table = doc.add_table(rows=5, cols=2)
     table.style = 'Table Grid'
    
-    # Add table headers and data using keyword-based counts
-    flag_distribution = keyword_summary['flag_distribution']
-    
+    # Add table headers and data
     table.cell(0, 0).text = 'High Risk'
     table.cell(0, 1).text = str(flag_distribution['High'])
     table.cell(1, 0).text = 'Medium Risk'
     table.cell(1, 1).text = str(flag_distribution['Medium'])
     table.cell(2, 0).text = 'Low Risk'
     table.cell(2, 1).text = str(flag_distribution['Low'])
-    table.cell(3, 0).text = 'Total Flags'
-    table.cell(3, 1).text = str(flag_distribution['Total'])
+    table.cell(3, 0).text = 'Not Applicable'
+    table.cell(3, 1).text = str(flag_distribution['Not_Applicable'])
+    table.cell(4, 0).text = 'Total Flags'
+    table.cell(4, 1).text = str(sum(flag_distribution.values()))
    
     # Make table headers bold
-    for i in range(4):
+    for i in range(5):
         table.cell(i, 0).paragraphs[0].runs[0].bold = True
    
     # Add space
     doc.add_paragraph('')
    
-    # Add High Risk Flags section
-    high_risk_flags = keyword_summary['high_risk_flags']
-    
-    if high_risk_flags:
-        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
-        high_risk_heading.runs[0].bold = True
-       
-        for flag in high_risk_flags:
-            p = doc.add_paragraph()
-            p.style = 'List Bullet'
-            p.add_run(flag['description'])
-    else:
-        # If no high risk flags, add a note
-        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
-        high_risk_heading.runs[0].bold = True
-        no_flags_para = doc.add_paragraph('No high risk flags identified.')
-   
-    # Add horizontal line
-    doc.add_paragraph('_' * 50)
-   
-    # Add Summary section
-    summary_heading = doc.add_heading('Summary', level=1)
-    summary_heading.runs[0].bold = True
-   
-    # Add categorized summary
-    for category, bullets in summary_by_categories.items():
-        if bullets:  # Only add if there are bullets
-            # Add category as subheading
-            cat_heading = doc.add_heading(category, level=2)
-            cat_heading.runs[0].bold = True
+    # Add Risk Categories sections
+    for category, flags in enhanced_summary.items():
+        if flags:  # Only add if there are flags
+            category_heading = doc.add_heading(category, level=2)
+            category_heading.runs[0].bold = True
            
-            # Add bullet points for this category
-            for bullet in bullets:
+            for flag in flags:
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
-                p.add_run(bullet)
+                p.add_run(flag)
            
             # Add space between categories
             doc.add_paragraph('')
-   
-    # Add Detailed Classification section
-    doc.add_paragraph('_' * 50)
-    detailed_heading = doc.add_heading('Detailed Risk Classification by Criteria', level=1)
-    detailed_heading.runs[0].bold = True
     
-    detailed_classification = keyword_summary['detailed_classification']
-    
-    if detailed_classification:
-        # Create table for detailed classification
-        detail_table = doc.add_table(rows=len(detailed_classification) + 1, cols=5)
-        detail_table.style = 'Table Grid'
-        
-        # Add headers
-        headers = ['Criteria', 'High', 'Medium', 'Low', 'Total']
-        for i, header in enumerate(headers):
-            cell = detail_table.cell(0, i)
-            cell.text = header
-            cell.paragraphs[0].runs[0].bold = True
-        
-        # Add data
-        row_idx = 1
-        for criterion, counts in detailed_classification.items():
-            detail_table.cell(row_idx, 0).text = criterion.replace('_', ' ').title()
-            detail_table.cell(row_idx, 1).text = str(counts['high'])
-            detail_table.cell(row_idx, 2).text = str(counts['medium'])
-            detail_table.cell(row_idx, 3).text = str(counts['low'])
-            detail_table.cell(row_idx, 4).text = str(counts['total'])
-            row_idx += 1
+    # If no high/medium/low risk flags, add a note
+    if not any(enhanced_summary.values()):
+        no_flags_heading = doc.add_heading('Risk Assessment:', level=2)
+        no_flags_heading.runs[0].bold = True
+        no_flags_para = doc.add_paragraph('No significant risk flags identified in the analysis.')
    
     # Save document
-    doc_filename = f"{pdf_name}_Report_Keyword_Based.docx"
+    doc_filename = f"{pdf_name}_Enhanced_Report.docx"
     doc_path = os.path.join(output_folder, doc_filename)
     doc.save(doc_path)
    
     return doc_path
 
-def process_single_pdf_with_keyword_fifth_iteration(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
-                                                  output_folder: str = "results", 
-                                                  api_key: str = None, azure_endpoint: str = None, 
-                                                  api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
+def process_single_pdf_enhanced_five_iterations(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+                                              output_folder: str = "results", 
+                                              api_key: str = None, azure_endpoint: str = None, 
+                                              api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process a single PDF through the 4-iteration pipeline + keyword-based 5th iteration
+    Process a single PDF through the enhanced 5-iteration pipeline with individual criteria evaluation
     """
    
     # Create output folder if it doesn't exist
@@ -856,20 +1007,22 @@ def process_single_pdf_with_keyword_fifth_iteration(pdf_path: str, queries_csv_p
        
         # Run 1st iteration
         first_results_df = pipeline_1st.query_llama(maintain_conversation=True, enable_chaining=False)
-       
-        # Get first response for chaining
         first_response = first_results_df.iloc[0]['response']
        
-        # ITERATION 2: Deduplication and cleanup
-        print("Running 2nd iteration - Deduplication...")
-        second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them."""
+        # ITERATION 2: Enhanced Deduplication and cleanup
+        print("Running 2nd iteration - Enhanced Deduplication...")
+        
+        # First remove duplicates using the enhanced function
+        deduplicated_response = remove_duplicates_from_response(first_response)
+        
+        second_prompt = """Remove any remaining duplicates from the above red flags analysis. Also clean up the formatting and ensure each red flag is unique and clearly distinct. Remove any flags that are essentially saying the same thing with different wording."""
        
         second_full_prompt = f"""You must answer the question strictly based on the below given context.
  
 Context:
 {pipeline_1st.docs[0]["context"]}
  
-Previous Analysis: {first_response}
+Previous Analysis (Already Deduplicated): {deduplicated_response}
  
 Based on the above analysis and the original context, please answer: {second_prompt}
  
@@ -1000,26 +1153,71 @@ Answer:"""
        
         fourth_response = pipeline_1st.llm._call(fourth_full_prompt, max_tokens=4000)
        
-        # ITERATION 5: Keyword-based Risk Classification
-        print("Running 5th iteration - Keyword-based Risk Classification...")
-        keyword_summary = streamlined_fifth_iteration(second_response, previous_year_data)
+        # ITERATION 5: Individual Risk Classification for 15 Criteria using 2nd iteration results
+        print("Running 5th iteration - Individual Criteria Risk Classification...")
+       
+        # Get individual criteria prompts
+        criteria_prompts = create_individual_criteria_prompts()
         
+        # Process each criterion individually using 2nd iteration results
+        criteria_results = []
+        
+        for criteria_name, criteria_prompt in criteria_prompts.items():
+            print(f"Evaluating criterion: {criteria_name}")
+            
+            # Create full prompt using 2nd iteration results and previous year data
+            full_prompt = f"""You must answer the question strictly based on the below given context.
+
+Context:
+{pipeline_1st.docs[0]["context"]}
+
+Deduplicated Red Flags Analysis:
+{second_response}
+
+Previous Year Data:
+{previous_year_data}
+
+Based on the above context and deduplicated analysis, please answer: {criteria_prompt}
+
+Answer:"""
+            
+            # Get response from Azure OpenAI
+            criterion_response = pipeline_1st.llm._call(full_prompt, max_tokens=1000)
+            
+            # Parse the response
+            parsed_result = parse_individual_risk_assessment(criterion_response)
+            
+            # Store results
+            criteria_results.append({
+                "criteria": criteria_name,
+                "prompt": criteria_prompt,
+                "response": criterion_response,
+                "parsed_result": parsed_result
+            })
+            
+            # Small delay to avoid overwhelming the API
+            time.sleep(1)
+       
+        # Calculate flag distribution from individual criteria results
+        print("Calculating flag distribution...")
+        flag_distribution = calculate_flag_distribution(criteria_results)
+        
+        # Create enhanced summary
+        print("Creating enhanced summary...")
+        enhanced_summary = create_enhanced_summary(criteria_results)
+       
         # Extract company information from first page
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
        
-        # Parse summary by categories
-        print("Parsing summary by categories...")
-        summary_by_categories = parse_summary_by_categories(fourth_response)
-       
-        # Create Word document with keyword-based results
-        print("Creating Word document...")
-        word_doc_path = create_word_document_keyword_based(
+        # Create Enhanced Word document
+        print("Creating enhanced Word document...")
+        word_doc_path = create_enhanced_word_document(
             pdf_name=pdf_name,
             company_info=company_info,
-            keyword_summary=keyword_summary,
-            summary_by_categories=summary_by_categories,
+            flag_distribution=flag_distribution,
+            enhanced_summary=enhanced_summary,
             output_folder=output_folder
         )
        
@@ -1030,57 +1228,59 @@ Answer:"""
             "iteration": [1, 2, 3, 4, 5],
             "stage": [
                 "Initial Analysis",
-                "Deduplication",
+                "Enhanced Deduplication",
                 "Categorization",
                 "Summary Generation",
-                "Keyword-based Risk Classification"
+                "Individual Criteria Risk Classification"
             ],
             "prompt": [
                 first_results_df.iloc[0]['query'],  # Original query from 1st iteration
                 second_prompt,
                 third_prompt,
                 fourth_prompt,
-                "Keyword-based classification using 2nd iteration response"
+                "Individual Risk Classification for 15 criteria using 2nd iteration results"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Flag Distribution: {keyword_summary['flag_distribution']}\nHigh Risk Flags Count: {len(keyword_summary['high_risk_flags'])}"
+                json.dumps([r['response'] for r in criteria_results])  # All criteria responses
             ],
             "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
         })
        
         # Save complete results
-        complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_keyword_based_pipeline_results.csv")
+        complete_output_file = os.path.join(output_folder, f"{pdf_name}_enhanced_5iteration_pipeline_results.csv")
         all_results.to_csv(complete_output_file, index=False)
        
-        # Save detailed keyword classification results
-        detailed_keyword_results = []
-        for criterion, results in keyword_summary['full_classification_results'].items():
-            if results['count'] > 0:
-                for risk_level in ['high_risk', 'medium_risk', 'low_risk']:
-                    for flag in results[risk_level]:
-                        detailed_keyword_results.append({
-                            'criterion': criterion,
-                            'risk_level': risk_level.replace('_risk', ''),
-                            'description': flag['description'],
-                            'original_quote': flag['original_quote'],
-                            'page_ref': flag['page_ref'],
-                            'match_score': flag['match_score']
-                        })
+        # Save detailed individual risk classification results
+        detailed_risk_df = pd.DataFrame([
+            {
+                'criteria': r['criteria'],
+                'summary': r['parsed_result']['summary'],
+                'risk_level': r['parsed_result']['risk_level'],
+                'full_response': r['response']
+            }
+            for r in criteria_results
+        ])
+        detailed_risk_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_risk_classification.csv")
+        detailed_risk_df.to_csv(detailed_risk_output_file, index=False)
         
-        if detailed_keyword_results:
-            detailed_keyword_df = pd.DataFrame(detailed_keyword_results)
-            detailed_keyword_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_keyword_classification.csv")
-            detailed_keyword_df.to_csv(detailed_keyword_output_file, index=False)
-            print(f"Detailed keyword classification saved to: {detailed_keyword_output_file}")
+        # Save flag distribution summary
+        flag_distribution_df = pd.DataFrame([
+            {'Risk_Level': level, 'Count': count}
+            for level, count in flag_distribution.items()
+        ])
+        flag_dist_output_file = os.path.join(output_folder, f"{pdf_name}_flag_distribution.csv")
+        flag_distribution_df.to_csv(flag_dist_output_file, index=False)
        
-        print(f"Complete keyword-based pipeline finished for {pdf_name}!")
+        print(f"Enhanced 5-iteration pipeline finished for {pdf_name}!")
         print(f"CSV Results saved to: {complete_output_file}")
-        print(f"Word document saved to: {word_doc_path}")
-        print(f"Flag Distribution: High={keyword_summary['flag_distribution']['High']}, Medium={keyword_summary['flag_distribution']['Medium']}, Low={keyword_summary['flag_distribution']['Low']}, Total={keyword_summary['flag_distribution']['Total']}")
+        print(f"Detailed risk classification saved to: {detailed_risk_output_file}")
+        print(f"Flag distribution saved to: {flag_dist_output_file}")
+        print(f"Enhanced Word document saved to: {word_doc_path}")
+        print(f"Flag Distribution: {flag_distribution}")
        
         return all_results
        
@@ -1096,22 +1296,12 @@ Answer:"""
         error_df.to_csv(error_file, index=False)
         return None
  
-def run_multiple_pdfs_keyword_based_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, 
-                                           output_folder: str = "results",
-                                           api_key: str = None, azure_endpoint: str = None, 
-                                           api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
+def run_multiple_pdfs_enhanced_five_iterations_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, 
+                                                      output_folder: str = "results",
+                                                      api_key: str = None, azure_endpoint: str = None, 
+                                                      api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process multiple PDFs from a folder through the keyword-based pipeline
-   
-    Args:
-        pdf_folder_path: Path to folder containing PDF files
-        queries_csv_path: Path to CSV/Excel file containing queries
-        previous_year_data: String containing previous year financial data
-        output_folder: Path to output folder for results
-        api_key: Azure OpenAI API key
-        azure_endpoint: Azure OpenAI endpoint
-        api_version: API version
-        deployment_name: Deployment name
+    Process multiple PDFs from a folder through the enhanced 5-iteration pipeline
     """
    
     # Create output folder if it doesn't exist
@@ -1128,7 +1318,7 @@ def run_multiple_pdfs_keyword_based_pipeline(pdf_folder_path: str, queries_csv_p
     for pdf_file in pdf_files:
         print(f"  - {os.path.basename(pdf_file)}")
    
-    print(f"\nStarting batch processing with keyword-based 5th iteration using Azure OpenAI GPT-4.1-mini...")
+    print(f"\nStarting enhanced batch processing with deduplication and individual criteria...")
     print(f"Output folder: {output_folder}")
     print("=" * 60)
    
@@ -1140,7 +1330,7 @@ def run_multiple_pdfs_keyword_based_pipeline(pdf_folder_path: str, queries_csv_p
         print(f"\n[{i}/{len(pdf_files)}] Processing: {os.path.basename(pdf_file)}")
        
         try:
-            result = process_single_pdf_with_keyword_fifth_iteration(
+            result = process_single_pdf_enhanced_five_iterations(
                 pdf_path=pdf_file,
                 queries_csv_path=queries_csv_path,
                 previous_year_data=previous_year_data,
@@ -1170,16 +1360,15 @@ def run_multiple_pdfs_keyword_based_pipeline(pdf_folder_path: str, queries_csv_p
         for file in failed_processing:
             print(f"  ✗ {file}")
 
-def main_keyword_based_processing():
+def main_enhanced_batch_processing():
     """
-    Main function to run the keyword-based batch processing with Azure OpenAI GPT-4.1-mini
-    Configure your Azure OpenAI credentials here
+    Main function to run the enhanced batch processing with Azure OpenAI GPT-4.1-mini
     """
     
     # Configuration
     pdf_folder_path = r"ola_pdf"
     queries_csv_path = r"EWS_prompts_v2.xlsx"      
-    output_folder = r"ola_results_keyword_based_azure_openai"
+    output_folder = r"ola_results_enhanced_individual_criteria"
     
     api_key = "8496bd1da40242a2"
     azure_endpoint = "https://crisil-pp-gpt.op"
@@ -1199,7 +1388,7 @@ Previous reported cash balance	 1,663 Cr	Mar-24
 Previous reported current liabilities	 1,071 Cr	Mar-24 
 """
  
-    run_multiple_pdfs_keyword_based_pipeline(
+    run_multiple_pdfs_enhanced_five_iterations_pipeline(
         pdf_folder_path=pdf_folder_path,
         queries_csv_path=queries_csv_path,
         previous_year_data=previous_year_data,
@@ -1211,4 +1400,4 @@ Previous reported current liabilities	 1,071 Cr	Mar-24
     )
  
 if __name__ == "__main__":
-    main_keyword_based_processing()
+    main_enhanced_batch_processing()
