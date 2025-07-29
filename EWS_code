@@ -2,18 +2,22 @@ import os
 import time
 import pandas as pd
 import fitz  
-import requests
 import warnings
 import hashlib
 import logging
 import json
-import ast
 from typing import Dict, List, Any
+import glob
+from pathlib import Path
+from docx import Document
+from docx.shared import Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.shared import OxmlElement, qn
+import re
+from openai import AzureOpenAI
+import httpx
  
-# Suppress SSL warnings
 warnings.filterwarnings('ignore')
- 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
  
@@ -22,58 +26,61 @@ def getFilehash(file_path: str):
     with open(file_path, 'rb') as f:
         return hashlib.sha3_256(f.read()).hexdigest()
  
-class HostedLLM:
-    """Custom LLM class for hosted Llama model"""
+class AzureOpenAILLM:
+    """Azure OpenAI GPT-4.1-mini LLM class"""
    
-    def __init__(self, endpoint: str):
-        self.endpoint = endpoint
+    def __init__(self, api_key: str, azure_endpoint: str, api_version: str, deployment_name: str = "gpt-4.1-mini"):
+        """
+        Initialize Azure OpenAI client
+        
+        Args:
+            api_key: Your Azure OpenAI API key
+            azure_endpoint: Your Azure OpenAI endpoint URL
+            api_version: API version (e.g., "2024-02-01")
+            deployment_name: Your deployment name (default: "gpt-4.1-mini")
+        """
+        self.deployment_name = deployment_name
+        
+        # Create httpx client with SSL verification disabled (if needed)
+        httpx_client = httpx.Client(verify=False)
+        
+        # Initialize Azure OpenAI client
+        self.client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            http_client=httpx_client
+        )
    
-    def _call(self, prompt: str) -> str:
-        """Make API call to hosted LLM"""
+    def _call(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
+        """Make API call to Azure OpenAI GPT-4.1-mini"""
         try:
-            prompt_template = f"""<|begin_of_text|><|start_header_id|>user<|end_header_id|>
-{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-"""
-           
-            payload = json.dumps({
-                "provider": "tgi",
-                "deployment": "Llama 3.3 v1",
-                "spec_version": 1,
-                "input_text": prompt_template,
-                "params": {"temperature": 0.1}
-            })
-           
-            headers = {
-                'token': '0e53d2cf9f724a94a6ca0a9c880fdee7',
-                'Content-Type': 'application/json'
-            }
-           
-            response = requests.post(
-                url="https://llmgateway.crisil.local/api/v1/llm",
-                headers=headers,
-                data=payload,
-                verify=False
+            response = self.client.chat.completions.create(
+                model=self.deployment_name,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=0.95,
+                frequency_penalty=0,
+                presence_penalty=0
             )
+            
+            # Extract the response text
+            response_text = response.choices[0].message.content
+            
+            # Log token usage
+            if hasattr(response, 'usage'):
+                logger.info(f"Tokens used - Prompt: {response.usage.prompt_tokens}, "
+                          f"Completion: {response.usage.completion_tokens}, "
+                          f"Total: {response.usage.total_tokens}")
+            
+            return response_text.strip() if response_text else ""
            
-            print(f"Response Status: {response.status_code}")
-            print(f"Response Text: {response.text[:500]}...")  # First 500 chars
-           
-            if response.status_code != 200:
-                return f"LLM Call Failed: HTTP {response.status_code} - {response.text}"
-           
-            response_v = ast.literal_eval(response.text)
-            resp_o = response_v['output']
-            output = str(resp_o).replace(prompt_template, "")
-            return output.strip()
-           
-        except requests.exceptions.RequestException as e:
-            return f"LLM Call Failed - Network Error: {e}"
-        except json.JSONDecodeError as e:
-            return f"LLM Call Failed - JSON Error: {e}"
-        except KeyError as e:
-            return f"LLM Call Failed - Missing Key: {e}"
         except Exception as e:
-            return f"LLM Call Failed - General Error: {e}"
+            logger.error(f"Azure OpenAI API call failed: {str(e)}")
+            return f"Azure OpenAI Call Failed: {str(e)}"
  
 class PDFExtractor:
     """Class for extracting text from PDF files"""
@@ -112,13 +119,384 @@ def mergeDocs(pdf_path: str, split_pages: bool = False) -> List[Dict[str, Any]]:
         # Merge all pages into single context
         all_text = "\n".join([page["text"] for page in pages])
         return [{"context": all_text}]
+
+# Keyword-based classification definitions
+CRITERIA_KEYWORDS = {
+    "debt_increase": {
+        "primary": ["debt", "borrowing", "loan", "leverage", "borrowed", "liability", "liabilities"],
+        "context": ["increased", "higher", "additional", "new", "rose", "went up", "more", "growth", "expansion"],
+        "financial_terms": ["term loan", "credit facility", "borrowings", "debt level", "total debt", "long-term debt"]
+    },
+    "provisioning": {
+        "primary": ["provision", "write-off", "write off", "impairment", "bad debt", "credit loss"],
+        "context": ["increased", "higher", "additional", "new", "substantial", "significant"],
+        "financial_terms": ["provision for", "written off", "impaired", "doubtful debt", "NPA", "bad loans"]
+    },
+    "asset_decline": {
+        "primary": ["asset", "assets", "asset value", "fixed asset", "investment"],
+        "context": ["declined", "fell", "reduced", "lower", "decreased", "impaired", "written down"],
+        "financial_terms": ["asset impairment", "asset write-down", "depreciation", "asset disposal"]
+    },
+    "receivable_days": {
+        "primary": ["receivable", "receivables", "accounts receivable", "debtor", "debtors"],
+        "context": ["days", "period", "increased", "higher", "extended", "longer"],
+        "financial_terms": ["receivable days", "collection period", "debtor days", "DSO"]
+    },
+    "payable_days": {
+        "primary": ["payable", "payables", "accounts payable", "creditor", "creditors"],
+        "context": ["days", "period", "increased", "higher", "extended", "longer"],
+        "financial_terms": ["payable days", "payment period", "creditor days", "DPO"]
+    },
+    "debt_ebitda": {
+        "primary": ["debt", "EBITDA", "leverage", "coverage"],
+        "context": ["ratio", "times", "multiple", "high", "increased"],
+        "financial_terms": ["debt/EBITDA", "debt to EBITDA", "leverage ratio", "debt ratio"]
+    },
+    "revenue_decline": {
+        "primary": ["revenue", "sales", "income", "turnover", "top line"],
+        "context": ["declined", "fell", "reduced", "lower", "decreased", "drop", "down"],
+        "financial_terms": ["revenue decline", "sales decline", "top-line decline"]
+    },
+    "onetime_expenses": {
+        "primary": ["one-time", "onetime", "exceptional", "extraordinary", "non-recurring"],
+        "context": ["expense", "expenses", "cost", "costs", "charge", "charges"],
+        "financial_terms": ["one-time charges", "exceptional items", "extraordinary expenses", "special items"]
+    },
+    "margin_decline": {
+        "primary": ["margin", "profitability", "gross margin", "operating margin", "EBITDA margin"],
+        "context": ["declined", "fell", "reduced", "pressure", "compression", "lower", "squeezed"],
+        "financial_terms": ["margin decline", "margin pressure", "profit margin", "operating leverage"]
+    },
+    "cash_balance": {
+        "primary": ["cash", "liquidity", "cash flow", "cash position", "cash balance"],
+        "context": ["declined", "reduced", "shortage", "crunch", "low", "negative", "poor"],
+        "financial_terms": ["working capital", "cash generation", "free cash flow", "cash conversion"]
+    },
+    "short_term_debt": {
+        "primary": ["short-term debt", "current liabilities", "short term", "working capital"],
+        "context": ["increased", "higher", "additional", "new", "rose", "went up"],
+        "financial_terms": ["current ratio", "quick ratio", "working capital loan", "short-term borrowing"]
+    },
+    "management_issues": {
+        "primary": ["management", "leadership", "CEO", "CFO", "board", "director", "executive"],
+        "context": ["change", "turnover", "departure", "resignation", "new", "replaced", "left"],
+        "financial_terms": ["management change", "leadership transition", "governance", "board changes"]
+    },
+    "regulatory_compliance": {
+        "primary": ["regulatory", "compliance", "regulation", "regulator", "legal", "law"],
+        "context": ["issue", "violation", "penalty", "fine", "warning", "notice", "action"],
+        "financial_terms": ["regulatory action", "compliance issue", "legal proceeding", "regulatory penalty"]
+    },
+    "market_competition": {
+        "primary": ["competition", "competitive", "competitor", "market", "industry"],
+        "context": ["pressure", "intense", "increased", "new", "entry", "share", "loss"],
+        "financial_terms": ["market share", "competitive pressure", "pricing pressure", "industry dynamics"]
+    },
+    "operational_disruptions": {
+        "primary": ["operational", "operation", "supply chain", "production", "manufacturing"],
+        "context": ["disruption", "issue", "problem", "failure", "breakdown", "inefficiency"],
+        "financial_terms": ["operational efficiency", "supply chain disruption", "production issues"]
+    }
+}
+
+def extract_red_flags_from_2nd_iteration(second_response: str) -> List[Dict[str, str]]:
+    """Extract structured red flags from 2nd iteration response"""
+    red_flags = []
+    
+    # Split by numbered red flags
+    sections = re.split(r'\n(?=\d+\.\s*The potential red flag)', second_response)
+    
+    for section in sections:
+        if not section.strip():
+            continue
+            
+        lines = section.strip().split('\n')
+        flag_data = {'description': '', 'original_quote': '', 'page_ref': ''}
+        
+        current_quote_lines = []
+        in_quote = False
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Extract description
+            if re.match(r'^\d+\.\s*The potential red flag', line):
+                # Extract description after the dash
+                match = re.search(r'The potential red flag you observed\s*-\s*(.+)', line)
+                if match:
+                    flag_data['description'] = match.group(1).strip()
+            
+            # Extract original quote
+            elif line.startswith('Original Quote:'):
+                in_quote = True
+                quote_content = line.replace('Original Quote:', '').strip()
+                if quote_content:
+                    current_quote_lines.append(quote_content)
+            elif in_quote and line:
+                if line.startswith('(Page') or line.lower().startswith('page'):
+                    # End of quote, extract page reference
+                    flag_data['page_ref'] = line
+                    in_quote = False
+                else:
+                    current_quote_lines.append(line)
+        
+        # Combine quote lines
+        if current_quote_lines:
+            flag_data['original_quote'] = ' '.join(current_quote_lines).strip(' "')
+        
+        # Only add if we have a description
+        if flag_data['description']:
+            red_flags.append(flag_data)
+    
+    return red_flags
+
+def extract_numerical_values(text: str) -> Dict[str, List[float]]:
+    """Extract percentages and numerical values from text"""
+    percentages = []
+    amounts = []
+    
+    # Extract percentages
+    pct_pattern = r'(\d+(?:\.\d+)?)\s*%'
+    pct_matches = re.findall(pct_pattern, text)
+    percentages = [float(match) for match in pct_matches]
+    
+    # Extract financial amounts (crores, lakhs, etc.)
+    amount_pattern = r'(?:INR|Rs\.?|₹)?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*(crore|lakh|million|billion)?'
+    amount_matches = re.findall(amount_pattern, text, re.IGNORECASE)
+    
+    for amount_str, unit in amount_matches:
+        try:
+            amount = float(amount_str.replace(',', ''))
+            if unit.lower() in ['crore', 'crores']:
+                amount *= 10000000  # Convert to actual value
+            elif unit.lower() in ['lakh', 'lakhs']:
+                amount *= 100000
+            amounts.append(amount)
+        except:
+            continue
+    
+    return {'percentages': percentages, 'amounts': amounts}
+
+def calculate_keyword_match_score(text: str, keyword_groups: Dict[str, List[str]]) -> int:
+    """Calculate keyword match score for a text"""
+    score = 0
+    text_lower = text.lower()
+    
+    for group_name, keywords in keyword_groups.items():
+        for keyword in keywords:
+            if keyword.lower() in text_lower:
+                # Weight different groups differently
+                if group_name == 'primary':
+                    score += 3
+                elif group_name == 'financial_terms':
+                    score += 2
+                else:  # context
+                    score += 1
+    
+    return score
+
+def determine_risk_level_from_content(flag: Dict[str, str], criterion: str, previous_year_data: str) -> str:
+    """Determine High/Medium/Low based on content analysis and business rules"""
+    
+    text = f"{flag['description']} {flag['original_quote']}".lower()
+    numerical_data = extract_numerical_values(text)
+    
+    # Apply criterion-specific thresholds
+    if criterion == "debt_increase":
+        for pct in numerical_data['percentages']:
+            if pct >= 40:
+                return "high"
+            elif 25 <= pct < 40:
+                return "medium"
+            elif pct < 25:
+                return "low"
+    
+    elif criterion in ["margin_decline", "revenue_decline"]:
+        for pct in numerical_data['percentages']:
+            if pct >= 25:
+                return "high"
+            elif 10 <= pct < 25:
+                return "medium"
+            elif pct < 10:
+                return "low"
+    
+    elif criterion in ["asset_decline", "receivable_days", "payable_days", "short_term_debt"]:
+        for pct in numerical_data['percentages']:
+            if pct >= 40:
+                return "high"
+            elif 25 <= pct < 40:
+                return "medium"
+            elif pct < 25:
+                return "low"
+    
+    elif criterion == "cash_balance":
+        for pct in numerical_data['percentages']:
+            if pct >= 25:
+                return "high"
+            elif 10 <= pct < 25:
+                return "medium"
+            elif pct < 10:
+                return "low"
+    
+    elif criterion in ["provisioning", "onetime_expenses"]:
+        # These are typically high risk if mentioned significantly
+        if any(word in text for word in ["significant", "substantial", "major", "large"]):
+            return "high"
+        elif any(word in text for word in ["moderate", "some", "increase"]):
+            return "medium"
+        else:
+            return "low"
+    
+    # Qualitative severity analysis for other criteria
+    severity_indicators = {
+        "high": ["significant", "major", "substantial", "severe", "critical", "serious", "large", "big"],
+        "medium": ["moderate", "noticeable", "some", "partial", "moderate"],
+        "low": ["minor", "slight", "small", "minimal", "limited"]
+    }
+    
+    for level, indicators in severity_indicators.items():
+        if any(indicator in text for indicator in indicators):
+            return level
+    
+    # Default based on keyword match strength
+    return "low"
+
+def classify_red_flags_by_keywords(red_flags: List[Dict[str, str]], previous_year_data: str) -> Dict[str, Dict]:
+    """Classify each red flag into appropriate criteria using keyword matching"""
+    classification_results = {}
+    
+    # Initialize results for all criteria
+    for criterion in CRITERIA_KEYWORDS.keys():
+        classification_results[criterion] = {
+            'high_risk': [],
+            'medium_risk': [],
+            'low_risk': [],
+            'count': 0
+        }
+    
+    # Process each red flag
+    for flag in red_flags:
+        # Combine description and quote for analysis
+        full_text = f"{flag['description']} {flag['original_quote']}"
+        
+        # Check each criterion
+        for criterion, keyword_groups in CRITERIA_KEYWORDS.items():
+            match_score = calculate_keyword_match_score(full_text, keyword_groups)
+            
+            if match_score > 0:  # If any keywords match
+                # Determine risk level based on content analysis
+                risk_level = determine_risk_level_from_content(flag, criterion, previous_year_data)
+                
+                # Add to appropriate risk category
+                flag_entry = {
+                    'description': flag['description'],
+                    'original_quote': flag['original_quote'],
+                    'page_ref': flag['page_ref'],
+                    'match_score': match_score
+                }
+                
+                classification_results[criterion][f'{risk_level}_risk'].append(flag_entry)
+                classification_results[criterion]['count'] += 1
+    
+    return classification_results
+
+def generate_final_summary_keyword_based(classification_results: Dict[str, Dict]) -> Dict[str, Any]:
+    """Generate flag distribution and high-risk summary from keyword classification"""
+    
+    # Calculate flag distribution
+    flag_distribution = {
+        'High': 0, 'Medium': 0, 'Low': 0, 'Total': 0
+    }
+    
+    high_risk_flags = []
+    detailed_classification = {}
+    
+    for criterion, results in classification_results.items():
+        high_count = len(results['high_risk'])
+        medium_count = len(results['medium_risk'])
+        low_count = len(results['low_risk'])
+        
+        flag_distribution['High'] += high_count
+        flag_distribution['Medium'] += medium_count
+        flag_distribution['Low'] += low_count
+        
+        # Collect high-risk flag descriptions (unique ones only)
+        for high_flag in results['high_risk']:
+            flag_desc = high_flag['description']
+            if flag_desc not in [f['description'] for f in high_risk_flags]:
+                high_risk_flags.append({
+                    'description': flag_desc,
+                    'criterion': criterion,
+                    'original_quote': high_flag['original_quote'],
+                    'page_ref': high_flag['page_ref']
+                })
+        
+        # Store detailed classification
+        if high_count > 0 or medium_count > 0 or low_count > 0:
+            detailed_classification[criterion] = {
+                'high': high_count,
+                'medium': medium_count,
+                'low': low_count,
+                'total': high_count + medium_count + low_count
+            }
+    
+    flag_distribution['Total'] = flag_distribution['High'] + flag_distribution['Medium'] + flag_distribution['Low']
+    
+    return {
+        'flag_distribution': flag_distribution,
+        'high_risk_flags': high_risk_flags,
+        'detailed_classification': detailed_classification,
+        'full_classification_results': classification_results
+    }
+
+def streamlined_fifth_iteration(second_response: str, previous_year_data: str) -> Dict[str, Any]:
+    """
+    Complete 5th iteration using only 2nd response + keyword algorithm
+    NO LLM CALLS NEEDED!
+    """
+    
+    print("Extracting red flags from 2nd iteration response...")
+    # Step 1: Extract red flags from 2nd iteration
+    red_flags = extract_red_flags_from_2nd_iteration(second_response)
+    print(f"Found {len(red_flags)} red flags in 2nd iteration response")
+    
+    print("Classifying red flags using keyword algorithm...")
+    # Step 2: Classify using keyword algorithm
+    classification_results = classify_red_flags_by_keywords(red_flags, previous_year_data)
+    
+    print("Generating final summary...")
+    # Step 3: Generate summary
+    summary = generate_final_summary_keyword_based(classification_results)
+    
+    return summary
  
 class LlamaQueryPipeline:
-    """Main pipeline class for querying PDF content with Llama"""
+    """Main pipeline class for querying PDF content with Azure OpenAI GPT-4.1-mini"""
    
-    def __init__(self, pdf_path: str, queries_csv_path: str = None, llm_endpoint: str = "https://llmgateway.crisil.local/api/v1/llm", previous_results_path: str = None):
-        """Initialize the pipeline"""
-        self.llm = HostedLLM(endpoint=llm_endpoint)
+    def __init__(self, pdf_path: str, queries_csv_path: str = None, 
+                 api_key: str = None, azure_endpoint: str = None, 
+                 api_version: str = None, deployment_name: str = "gpt-4.1-mini",
+                 previous_results_path: str = None):
+        """
+        Initialize the pipeline with Azure OpenAI
+        
+        Args:
+            pdf_path: Path to PDF file
+            queries_csv_path: Path to queries CSV/Excel file
+            api_key: Azure OpenAI API key
+            azure_endpoint: Azure OpenAI endpoint
+            api_version: API version
+            deployment_name: Deployment name
+            previous_results_path: Path to previous results
+        """
+        # Initialize Azure OpenAI LLM
+        self.llm = AzureOpenAILLM(
+            api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"), 
+            api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            deployment_name=deployment_name
+        )
+        
         self.docs = mergeDocs(pdf_path, split_pages=False)
        
         # Load queries from Excel or CSV (only if provided)
@@ -132,108 +510,22 @@ class LlamaQueryPipeline:
             self.queries = []
            
         self.pdf_path = pdf_path
+        self.pdf_name = Path(pdf_path).stem  # Get filename without extension
        
         # Load previous results if provided
         self.previous_results = None
         if previous_results_path and os.path.exists(previous_results_path):
             self.previous_results = pd.read_csv(previous_results_path)
-   
-    def query_llama_with_chaining(self, new_queries_csv_path: str, iteration_number: int = 2) -> pd.DataFrame:
-        """Query the Llama API using previous results for chaining"""
-        if self.previous_results is None:
-            raise ValueError("No previous results loaded. Please provide previous_results_path in __init__")
-       
-        # Load new queries
-        if new_queries_csv_path.endswith('.xlsx'):
-            new_queries_df = pd.read_excel(new_queries_csv_path)
-        else:
-            new_queries_df = pd.read_csv(new_queries_csv_path)
-       
-        new_queries = new_queries_df["prompt"].tolist()
-       
-        sys_prompt = f"""You must answer the question strictly based on the below given context.
- 
-Context:
-{self.docs[0]["context"]}
- 
-"""
-       
-        results = []
-       
-        # Process each new query with corresponding previous response
-        for i, new_query in enumerate(new_queries):
-            start = time.perf_counter()
-           
-            try:
-                # Get the corresponding previous response (if available)
-                if i < len(self.previous_results):
-                    # Check if it's 3rd iteration (chained results) or 2nd iteration (original results)
-                    if 'chained_response' in self.previous_results.columns:
-                        previous_response = self.previous_results.iloc[i]['chained_response']
-                    else:
-                        previous_response = self.previous_results.iloc[i]['response']
-                   
-                    # Create chained prompt: new query + previous response
-                    chained_prompt = f"""Previous Analysis: {previous_response}
- 
-Based on the above analysis and the original context, please answer: {new_query}
- 
-Answer:"""
-                else:
-                    # If no previous response available, use regular prompt
-                    chained_prompt = f"""Question: {new_query}
-Answer:"""
-               
-                full_prompt = f"{sys_prompt}\n{chained_prompt}"
-               
-                # Get response from Llama
-                response_text = self.llm._call(full_prompt)
-                end = time.perf_counter()
-               
-                # Calculate token approximations
-                input_tokens = len(full_prompt.split())
-                completion_tokens = len(response_text.split()) if response_text else 0
-               
-                usage = {
-                    "iteration": iteration_number,
-                    "query_id": i + 1,
-                    "original_query": new_queries_df.iloc[i]["prompt"] if i < len(new_queries_df) else new_query,
-                    "previous_response": previous_response if i < len(self.previous_results) else "",
-                    "new_query": new_query,
-                    "chained_response": response_text,
-                    "completion_tokens": completion_tokens,
-                    "input_tokens": input_tokens,
-                    "response_time": f"{end - start:.2f}"
-                }
-               
-            except Exception as e:
-                end = time.perf_counter()
-               
-                usage = {
-                    "iteration": iteration_number,
-                    "query_id": i + 1,
-                    "original_query": new_queries_df.iloc[i]["prompt"] if i < len(new_queries_df) else new_query,
-                    "previous_response": previous_response if i < len(self.previous_results) else "",
-                    "new_query": new_query,
-                    "chained_response": f"Error: {str(e)}",
-                    "completion_tokens": None,
-                    "input_tokens": None,
-                    "response_time": f"{end - start:.2f}"
-                }
-           
-            results.append(usage)
-       
-        return pd.DataFrame(results)
- 
-    def query_llama(self, maintain_conversation: bool = True, enable_chaining: bool = False) -> pd.DataFrame:
-        """Query the Llama API for a list of queries using the provided context"""
-        sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
 
+    def query_llama(self, maintain_conversation: bool = True, enable_chaining: bool = False) -> pd.DataFrame:
+        """Query the Azure OpenAI API for a list of queries using the provided context"""
+        sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
+ 
 COMPLETE DOCUMENT TO ANALYZE:
 {self.docs[0]["context"]}
-
-Your task is to analyze the ENTIRE document above and identify ALL potential red flags. 
-
+ 
+Your task is to analyze the ENTIRE document above and identify ALL potential red flags.
+ 
 CRITICAL OUTPUT FORMAT REQUIREMENTS:
 - Number each red flag sequentially (1, 2, 3, etc.)
 - Start each entry with: "The potential red flag you observed - [brief description]"
@@ -241,34 +533,34 @@ CRITICAL OUTPUT FORMAT REQUIREMENTS:
 - Include page references where available: (Page X)
 - Ensure comprehensive analysis of the entire document
 - Do not miss any sections or concerning statements
-
+ 
 EXAMPLE FORMAT:
 1. The potential red flag you observed - Debt reduction is lower than expected  
 Original Quote:  
 "Vikrant Kashyap: Have you -- are you able to reduce any debt in quarter one in Middle East and India?  
 Ramesh Kalyanaraman: So India, we are not reduced, but the cash balance has been increased to around INR75 crores, but we have not reduced any debt in Q1 in India and Middle East because Middle East we have not converted any showroom in Q1." (Page 9)  
-
+ 
 2. The potential red flag you observed - Margin pressure/Competition intensifying/Cost inflation  
 Original Quote:  
 "Pulkit Singhal: Thank you for the opportunity and congrats on the good set of performance. Just the first question is really on the margins, which seems to have been elusive. I mean looking at the company for the last two years, we seem to be executing quite well in terms of store expansions and revenue growth and clearly delivering higher than expected there. But margin expansion just has been completely elusive.  
 And I find it surprising your comment that while growing at 30% growth and 12% SSSG, I mean, which is quite healthy, you're still talking about high competitive intensity kind of quite contradictory that with such high growth rates, we have to invest so high. So can you talk about this a bit more? I mean we don't expect with lower revenue growth rates that you would not have to invest in the business. And it's only during a higher revenue growth that you expect margin expansion.  
 Ramesh Kalyanaraman: Yes. So you're right. We are -- meaning somewhere we have missed out on the operating leverage for advertisements that's why I told you that even Q1, it was a miss. And regarding competition, I will tell you where in new markets, where we assume that we will not spend too much because the brand is already aware and the location is the only thing which has to be communicated.  
 When you see the local players, regional players or the micro market players there becoming extremely active because of our showroom launch then we will have to increase the noise level there. Otherwise, we will lose our market share. And existing local players they increase their activity around our launch time. So that is where we also put more money so that we don't end up losing the market share or we don't end up taking out lesser from the competition." (Page 12-13)  
-
+ 
 3. The potential red flag you observed - Debt high/Increase in borrowing cost  
 Original Quote:  
 "Vikrant Kashyap: My question is how are you going to address this? Because if you continue to grow at a higher level, but bottom line is not expanding related to the top line, it will going to impact your overall performance? So, what are the steps you are taking to improve the bottom line in the businesses  
 Sanjay Raghuraman: Finance costs will be taken care because we told you when we convert stores, that money is going to reduce our debt. Okay. And again, FOCO, when you do FOCO showrooms, the margins will come down. And surely, that will have an impact on the gross margin. Okay. And interest, if you look at actually, the interest rates have been going up last year. So next year, that will be the base, right? So then again, we will not have this kind of issue is what we feel. So interest rates have been going up over the past year, one year, in that region.  
 And we are also beginning to repay loans now because of conversion. So all put together, interest part will be taken care but other area where FOCO showrooms will surely reduce our margin. We cannot have the own store margin. So that should be the way we should look at it." (Page 9)
-
+ 
 Continue this exact format for ALL red flags identified throughout the document.
-
+ 
 """
        
         prompt_template = """Question: {query}
-
+ 
 Analyze the complete document and provide ALL red flags in the exact numbered format specified above. Be thorough and comprehensive - cover the entire document.
-
+ 
 Answer:"""
        
         conversation_history = ""
@@ -289,7 +581,8 @@ Answer:"""
                 else:
                     full_prompt = f"{sys_prompt}\n{prompt_template.format(query=chained_query)}"
                
-                response_text = self.llm._call(full_prompt)
+                # Use higher max_tokens for comprehensive analysis
+                response_text = self.llm._call(full_prompt, max_tokens=4000)
                 end = time.perf_counter()
                
                 input_tokens = len(full_prompt.split())
@@ -337,118 +630,320 @@ Answer:"""
         """Save results to CSV file"""
         if output_path is None:
             # Generate filename based on PDF name and timestamp
-            pdf_name = os.path.splitext(os.path.basename(self.pdf_path))[0]
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_path = f"llama_query_results_{pdf_name}_{timestamp}.csv"
+            output_path = f"azure_openai_query_results_{self.pdf_name}_{timestamp}.csv"
        
         results_df.to_csv(output_path, index=False)
         return output_path
+ 
+def extract_company_info_from_pdf(pdf_path: str, llm: AzureOpenAILLM) -> str:
+    """Extract company name, quarter, and financial year from first page of PDF"""
+    try:
+        doc = fitz.open(pdf_path)
+        first_page_text = doc[0].get_text()
+        doc.close()
+       
+        # Limit text to first 2000 characters to avoid token limits
+        first_page_text = first_page_text[:2000]
+       
+        prompt = f"""
+You are a financial document analyst. Extract the company name, quarter, and financial year from the following text which is from the first page of an earnings call transcript or financial document.
+ 
+Text from first page:
+{first_page_text}
+ 
+Please identify:
+1. Company Name (full company name including Ltd/Limited/Inc etc.)
+2. Quarter (Q1/Q2/Q3/Q4)
+3. Financial Year (FY23/FY24/FY25 etc.)
+ 
+Format your response as: [Company Name]-[Quarter][Financial Year]
+Example: Reliance Industries Limited-Q4FY25
+ 
+If you cannot find clear information, make the best estimate based on available data.
+ 
+Response:"""
+       
+        response = llm._call(prompt, max_tokens=200)
+        # Clean the response to get just the formatted string
+        response_lines = response.strip().split('\n')
+        for line in response_lines:
+            if '-Q' in line and 'FY' in line:
+                return line.strip()
+       
+        # Fallback - return first non-empty line
+        return response_lines[0].strip() if response_lines else "Unknown Company-Q1FY25"
+       
+    except Exception as e:
+        logger.error(f"Error extracting company info: {e}")
+        return "Unknown Company-Q1FY25"
 
-def run_four_iteration_pipeline():
-    """
-    Complete 4-iteration pipeline for financial red flag analysis:
-    1. Initial red flag identification
-    2. Deduplication and cleanup
-    3. Categorization of red flags
-    4. Detailed summary generation
-    """
+def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
+    """Parse the 4th iteration summary response by categories"""
+    categories_summary = {}
+   
+    # Split by ### headers
+    sections = fourth_response.split('###')
+   
+    for section in sections:
+        if not section.strip():
+            continue
+           
+        lines = section.split('\n')
+        category_name = ""
+        bullets = []
+       
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('*') and not line.startswith('-'):
+                # This is likely the category name
+                category_name = line.strip()
+            elif line.startswith('*') or line.startswith('-'):
+                # This is a bullet point
+                bullet_text = line[1:].strip()  # Remove bullet symbol
+                if bullet_text:
+                    bullets.append(bullet_text)
+       
+        if category_name and bullets:
+            categories_summary[category_name] = bullets
+   
+    return categories_summary
+ 
+def create_word_document_keyword_based(pdf_name: str, company_info: str, 
+                                     keyword_summary: Dict[str, Any],
+                                     summary_by_categories: Dict[str, List[str]], 
+                                     output_folder: str) -> str:
+    """Create a formatted Word document with the keyword-based analysis results"""
+   
+    # Create new document
+    doc = Document()
+   
+    # Set document title
+    title = doc.add_heading(company_info, 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+   
+    # Add Flag Distribution section
+    flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+    flag_dist_heading.runs[0].bold = True
+   
+    # Create table for flag distribution
+    table = doc.add_table(rows=4, cols=2)
+    table.style = 'Table Grid'
+   
+    # Add table headers and data using keyword-based counts
+    flag_distribution = keyword_summary['flag_distribution']
     
-    # Configuration
-    pdf_path = r"Kalyan June 24.pdf"
-    queries_csv_path = r"EWS_prompts_v2.xlsx"
+    table.cell(0, 0).text = 'High Risk'
+    table.cell(0, 1).text = str(flag_distribution['High'])
+    table.cell(1, 0).text = 'Medium Risk'
+    table.cell(1, 1).text = str(flag_distribution['Medium'])
+    table.cell(2, 0).text = 'Low Risk'
+    table.cell(2, 1).text = str(flag_distribution['Low'])
+    table.cell(3, 0).text = 'Total Flags'
+    table.cell(3, 1).text = str(flag_distribution['Total'])
+   
+    # Make table headers bold
+    for i in range(4):
+        table.cell(i, 0).paragraphs[0].runs[0].bold = True
+   
+    # Add space
+    doc.add_paragraph('')
+   
+    # Add High Risk Flags section
+    high_risk_flags = keyword_summary['high_risk_flags']
     
-    print("Starting complete 4-iteration pipeline...")
+    if high_risk_flags:
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+       
+        for flag in high_risk_flags:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(flag['description'])
+    else:
+        # If no high risk flags, add a note
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        no_flags_para = doc.add_paragraph('No high risk flags identified.')
+   
+    # Add horizontal line
+    doc.add_paragraph('_' * 50)
+   
+    # Add Summary section
+    summary_heading = doc.add_heading('Summary', level=1)
+    summary_heading.runs[0].bold = True
+   
+    # Add categorized summary
+    for category, bullets in summary_by_categories.items():
+        if bullets:  # Only add if there are bullets
+            # Add category as subheading
+            cat_heading = doc.add_heading(category, level=2)
+            cat_heading.runs[0].bold = True
+           
+            # Add bullet points for this category
+            for bullet in bullets:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(bullet)
+           
+            # Add space between categories
+            doc.add_paragraph('')
+   
+    # Add Detailed Classification section
+    doc.add_paragraph('_' * 50)
+    detailed_heading = doc.add_heading('Detailed Risk Classification by Criteria', level=1)
+    detailed_heading.runs[0].bold = True
     
-    # ITERATION 1: Initial red flag identification
-    print("Running 1st iteration - Initial Analysis...")
-    pipeline_1st = LlamaQueryPipeline(
-        pdf_path=pdf_path,
-        queries_csv_path=queries_csv_path
-    )
+    detailed_classification = keyword_summary['detailed_classification']
     
-    # Run 1st iteration
-    first_results_df = pipeline_1st.query_llama(maintain_conversation=True, enable_chaining=False)
-    
-    first_output_file = pipeline_1st.save_results(first_results_df, "llama_query_results_iteration1.csv")
-    print(f"1st iteration completed. Results saved to: {first_output_file}")
-    
-    # Get first response for chaining
-    first_response = first_results_df.iloc[0]['response']
-    
-    # ITERATION 2: Deduplication and cleanup
-    print("Running 2nd iteration - Deduplication...")
-    second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. 
-    
-Ensure that:
-1. No duplicate red flags are present
-2. Similar or redundant information is consolidated
-3. All unique red flags are retained
-4. The output maintains the structure and clarity of the original analysis"""
-    
-    second_full_prompt = f"""You must answer the question strictly based on the below given context.
+    if detailed_classification:
+        # Create table for detailed classification
+        detail_table = doc.add_table(rows=len(detailed_classification) + 1, cols=5)
+        detail_table.style = 'Table Grid'
+        
+        # Add headers
+        headers = ['Criteria', 'High', 'Medium', 'Low', 'Total']
+        for i, header in enumerate(headers):
+            cell = detail_table.cell(0, i)
+            cell.text = header
+            cell.paragraphs[0].runs[0].bold = True
+        
+        # Add data
+        row_idx = 1
+        for criterion, counts in detailed_classification.items():
+            detail_table.cell(row_idx, 0).text = criterion.replace('_', ' ').title()
+            detail_table.cell(row_idx, 1).text = str(counts['high'])
+            detail_table.cell(row_idx, 2).text = str(counts['medium'])
+            detail_table.cell(row_idx, 3).text = str(counts['low'])
+            detail_table.cell(row_idx, 4).text = str(counts['total'])
+            row_idx += 1
+   
+    # Save document
+    doc_filename = f"{pdf_name}_Report_Keyword_Based.docx"
+    doc_path = os.path.join(output_folder, doc_filename)
+    doc.save(doc_path)
+   
+    return doc_path
 
+def process_single_pdf_with_keyword_fifth_iteration(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+                                                  output_folder: str = "results", 
+                                                  api_key: str = None, azure_endpoint: str = None, 
+                                                  api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
+    """
+    Process a single PDF through the 4-iteration pipeline + keyword-based 5th iteration
+    """
+   
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+   
+    # Get PDF name without extension
+    pdf_name = Path(pdf_path).stem
+   
+    print(f"\nProcessing: {pdf_name}")
+    print("=" * 50)
+   
+    try:
+        # ITERATION 1: Initial red flag identification
+        print("Running 1st iteration - Initial Analysis...")
+        pipeline_1st = LlamaQueryPipeline(
+            pdf_path=pdf_path,
+            queries_csv_path=queries_csv_path,
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            deployment_name=deployment_name
+        )
+       
+        # Run 1st iteration
+        first_results_df = pipeline_1st.query_llama(maintain_conversation=True, enable_chaining=False)
+       
+        # Get first response for chaining
+        first_response = first_results_df.iloc[0]['response']
+       
+        # ITERATION 2: Deduplication and cleanup
+        print("Running 2nd iteration - Deduplication...")
+        second_prompt = """Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them."""
+       
+        second_full_prompt = f"""You must answer the question strictly based on the below given context.
+ 
 Context:
 {pipeline_1st.docs[0]["context"]}
-
+ 
 Previous Analysis: {first_response}
-
+ 
 Based on the above analysis and the original context, please answer: {second_prompt}
-
+ 
 Answer:"""
-    
-    second_response = pipeline_1st.llm._call(second_full_prompt)
-    
-    # ITERATION 3: Categorization of red flags
-    print("Running 3rd iteration - Categorization...")
-    # UPDATED: Clear prompt that references the deduplicated red flags from iteration 2
-    third_prompt = """Based on the deduplicated red flags identified in the previous analysis, I need help categorizing these red flags into the following 8 categories:
-
-1. Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, and overall financial position.
-2. P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
-3. Management Issues: Red flags related to the company's leadership, governance, and decision-making processes.
-4. Regulatory Issues: Red flags related to the company's compliance with laws, regulations, and industry standards.
-5. Industry and Market Issues: Red flags related to the company's position within its industry, market trends, and competitive landscape.
-6. Operational Issues: Red flags related to the company's internal processes, systems, and infrastructure.
-7. Financial Reporting and Transparency Issues: Red flags related to the company's financial reporting, disclosure, and transparency practices.
-8. Strategic Issues: Red flags related to the company's overall strategy, vision, and direction.
-
-**Task**: Take each red flag from the deduplicated list in the previous analysis and assign it to the most appropriate category above.
-
-**Rules for categorization**:
-- If a red flag could fit into multiple categories, assign it to the one that seems most closely related
-- Do not leave any flag unclassified
-- Do not assign any flag to multiple categories
-- Ensure clear classification that groups similar issues together
-
+       
+        second_response = pipeline_1st.llm._call(second_full_prompt, max_tokens=4000)
+       
+        # ITERATION 3: Categorization of red flags
+        print("Running 3rd iteration - Categorization...")
+        third_prompt = """You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
+ 
+- Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, debt and overall financial position.
+- P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
+- Liquidity Issues: Concerns related to the company's ability to meet its short-term obligations, such as cash flow problems, debt repayment issues, or insufficient working capital.
+- Management and Strategy related Issues: Concerns related to leadership, governance, decision-making processes, overall strategy, vision, and direction.
+- Regulatory Issues: Concerns related Compliance with laws, regulations.
+- Industry and Market Issues: Concerns related Position within the industry, market trends, and competitive landscape.
+- Operational Issues: Concerns related Internal processes, systems, and infrastructure.
+ 
+While categorizing the red flags strictly adhere to the following guidelines:
+1. Please review the below red flags and assign each one to the most relevant category.
+2. Do not loose information from the Original Quotes keep them as it is.
+3. If a red flag could fit into multiple categories, please assign it to the one that seems most closely related, do not leave any flag unclassified or fit it into multiple categories.
+4. While classifying, classify it in a such a way that the flags come under the categories along with their content. Strictly do not create a new category stick to what is mentioned above like an "Additional Red Flags", classify the flags in the above mentioned category only.
+5. Do not repeat a category more than once in the output.
+ 
 **Output Format**:
-### 1. Balance Sheet Issues
-- [Red flag 1 from previous analysis]
-- [Red flag 2 from previous analysis]
-
-### 2. P&L (Income Statement) Issues
-- [Red flag 1 from previous analysis]
-- [Red flag 2 from previous analysis]
-
-Continue this format for all 8 categories, ensuring every red flag from the previous analysis is categorized."""
-    
-    third_full_prompt = f"""You must answer the question strictly based on the below given context.
-
+### Balance Sheet Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### P&L (Income Statement) Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### Liquidity Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### Management and Strategy related Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### Regulatory Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### Industry and Market Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+### Operational Issues
+- [Red flag 1 with original quote]
+- [Red flag 2 with original quote]
+ 
+Continue this format for all categories, ensuring every red flag from the previous analysis is categorized properly."""
+       
+        third_full_prompt = f"""You must answer the question strictly based on the below given context.
+ 
 Context:
 {pipeline_1st.docs[0]["context"]}
-
+ 
 Previous Analysis: {second_response}
-
+ 
 Based on the above analysis and the original context, please answer: {third_prompt}
-
+ 
 Answer:"""
-    
-    third_response = pipeline_1st.llm._call(third_full_prompt)
-    
-    # ITERATION 4: Detailed summary generation
-    print("Running 4th iteration - Summary Generation...")
-    # NEW: Fourth prompt for detailed summarization
-    fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags. Follow these guidelines:
-
+       
+        third_response = pipeline_1st.llm._call(third_full_prompt, max_tokens=4000)
+       
+        # ITERATION 4: Detailed summary generation
+        print("Running 4th iteration - Summary Generation...")
+        fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags in bullet point format. Follow these guidelines:
+ 
 1. **Retain all information**: Ensure that no details are omitted or lost during the summarization process
 2. **Maintain a neutral tone**: Present the summary in a factual and objective manner, avoiding any emotional or biased language
 3. **Focus on factual content**: Base the summary solely on the information associated with each red flag, without introducing external opinions or assumptions
@@ -457,85 +952,263 @@ Answer:"""
 6. **Incorporate quantitative data**: Wherever possible, include quantitative data and statistics to support the summary and provide additional context
 7. **Category-specific content**: Ensure that the summary is generated based solely on the content present within each category
 8. **Summary should be factual**: Avoid any subjective interpretations or opinions
-
+9. **Use bullet points**: Each red flag should be summarized as a separate bullet point with key details and data points
+ 
 Format the output exactly like this example:
-### 1. Balance Sheet Issues
-[Detailed paragraph summary of all balance sheet related red flags with specific data points and factual information]
-
-### 2. P&L (Income Statement) Issues  
-[Detailed paragraph summary of all P&L related red flags with specific data points and factual information]
-
-Continue this format for all 8 categories. Each summary should be a comprehensive paragraph that captures all the relevant red flags and their details within that category."""
-    
-    fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
-
+### Balance Sheet Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+* [Summary of red flag 3 with specific data points and factual information]
+ 
+### P&L (Income Statement) Issues  
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+* [Summary of red flag 3 with specific data points and factual information]
+ 
+### Liquidity Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+ 
+### Management and Strategy related Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+ 
+### Regulatory Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+ 
+### Industry and Market Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+ 
+### Operational Issues
+* [Summary of red flag 1 with specific data points and factual information]
+* [Summary of red flag 2 with specific data points and factual information]
+ 
+Continue this format for all 7 categories. Each bullet point should be a concise summary that captures the key details of each red flag within that category, including relevant quantitative data where available."""
+       
+        fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
+ 
 Context:
 {pipeline_1st.docs[0]["context"]}
-
+ 
 Previous Analysis: {third_response}
-
+ 
 Based on the above analysis and the original context, please answer: {fourth_prompt}
-
+ 
 Answer:"""
-    
-    fourth_response = pipeline_1st.llm._call(fourth_full_prompt)
-    
-    # Save all results together
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    all_results = pd.DataFrame({
-        "iteration": [1, 2, 3, 4],
-        "stage": [
-            "Initial Analysis",
-            "Deduplication", 
-            "Categorization",
-            "Summary Generation"
-        ],
-        "prompt": [
-            first_results_df.iloc[0]['query'],  # Original query from 1st iteration
-            second_prompt,
-            third_prompt,
-            fourth_prompt
-        ],
-        "response": [
-            first_response,
-            second_response,
-            third_response,
-            fourth_response
-        ],
-        "timestamp": [timestamp, timestamp, timestamp, timestamp]
-    })
-    
-    # Save complete results
-    complete_output_file = f"complete_pipeline_results_{timestamp}.csv"
-    all_results.to_csv(complete_output_file, index=False)
-    
-    print(f"Complete 4-iteration pipeline finished!")
-    print(f"1st iteration: {first_output_file}")
-    print(f"Complete results: {complete_output_file}")
-    print(f"Final categorized summary is in row 4 of {complete_output_file}")
-    
-    return all_results
+       
+        fourth_response = pipeline_1st.llm._call(fourth_full_prompt, max_tokens=4000)
+       
+        # ITERATION 5: Keyword-based Risk Classification
+        print("Running 5th iteration - Keyword-based Risk Classification...")
+        keyword_summary = streamlined_fifth_iteration(second_response, previous_year_data)
+        
+        # Extract company information from first page
+        print("Extracting company information...")
+        company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
+        print(f"Identified company: {company_info}")
+       
+        # Parse summary by categories
+        print("Parsing summary by categories...")
+        summary_by_categories = parse_summary_by_categories(fourth_response)
+       
+        # Create Word document with keyword-based results
+        print("Creating Word document...")
+        word_doc_path = create_word_document_keyword_based(
+            pdf_name=pdf_name,
+            company_info=company_info,
+            keyword_summary=keyword_summary,
+            summary_by_categories=summary_by_categories,
+            output_folder=output_folder
+        )
+       
+        # Save all results together
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        all_results = pd.DataFrame({
+            "pdf_name": [pdf_name, pdf_name, pdf_name, pdf_name, pdf_name],
+            "iteration": [1, 2, 3, 4, 5],
+            "stage": [
+                "Initial Analysis",
+                "Deduplication",
+                "Categorization",
+                "Summary Generation",
+                "Keyword-based Risk Classification"
+            ],
+            "prompt": [
+                first_results_df.iloc[0]['query'],  # Original query from 1st iteration
+                second_prompt,
+                third_prompt,
+                fourth_prompt,
+                "Keyword-based classification using 2nd iteration response"
+            ],
+            "response": [
+                first_response,
+                second_response,
+                third_response,
+                fourth_response,
+                f"Flag Distribution: {keyword_summary['flag_distribution']}\nHigh Risk Flags Count: {len(keyword_summary['high_risk_flags'])}"
+            ],
+            "timestamp": [timestamp, timestamp, timestamp, timestamp, timestamp]
+        })
+       
+        # Save complete results
+        complete_output_file = os.path.join(output_folder, f"{pdf_name}_complete_keyword_based_pipeline_results.csv")
+        all_results.to_csv(complete_output_file, index=False)
+       
+        # Save detailed keyword classification results
+        detailed_keyword_results = []
+        for criterion, results in keyword_summary['full_classification_results'].items():
+            if results['count'] > 0:
+                for risk_level in ['high_risk', 'medium_risk', 'low_risk']:
+                    for flag in results[risk_level]:
+                        detailed_keyword_results.append({
+                            'criterion': criterion,
+                            'risk_level': risk_level.replace('_risk', ''),
+                            'description': flag['description'],
+                            'original_quote': flag['original_quote'],
+                            'page_ref': flag['page_ref'],
+                            'match_score': flag['match_score']
+                        })
+        
+        if detailed_keyword_results:
+            detailed_keyword_df = pd.DataFrame(detailed_keyword_results)
+            detailed_keyword_output_file = os.path.join(output_folder, f"{pdf_name}_detailed_keyword_classification.csv")
+            detailed_keyword_df.to_csv(detailed_keyword_output_file, index=False)
+            print(f"Detailed keyword classification saved to: {detailed_keyword_output_file}")
+       
+        print(f"Complete keyword-based pipeline finished for {pdf_name}!")
+        print(f"CSV Results saved to: {complete_output_file}")
+        print(f"Word document saved to: {word_doc_path}")
+        print(f"Flag Distribution: High={keyword_summary['flag_distribution']['High']}, Medium={keyword_summary['flag_distribution']['Medium']}, Low={keyword_summary['flag_distribution']['Low']}, Total={keyword_summary['flag_distribution']['Total']}")
+       
+        return all_results
+       
+    except Exception as e:
+        print(f"Error processing {pdf_name}: {str(e)}")
+        # Save error log
+        error_df = pd.DataFrame({
+            "pdf_name": [pdf_name],
+            "error": [str(e)],
+            "timestamp": [time.strftime("%Y%m%d_%H%M%S")]
+        })
+        error_file = os.path.join(output_folder, f"{pdf_name}_error_log.csv")
+        error_df.to_csv(error_file, index=False)
+        return None
+ 
+def run_multiple_pdfs_keyword_based_pipeline(pdf_folder_path: str, queries_csv_path: str, previous_year_data: str, 
+                                           output_folder: str = "results",
+                                           api_key: str = None, azure_endpoint: str = None, 
+                                           api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
+    """
+    Process multiple PDFs from a folder through the keyword-based pipeline
+   
+    Args:
+        pdf_folder_path: Path to folder containing PDF files
+        queries_csv_path: Path to CSV/Excel file containing queries
+        previous_year_data: String containing previous year financial data
+        output_folder: Path to output folder for results
+        api_key: Azure OpenAI API key
+        azure_endpoint: Azure OpenAI endpoint
+        api_version: API version
+        deployment_name: Deployment name
+    """
+   
+    # Create output folder if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+   
+    # Get all PDF files from the folder
+    pdf_files = glob.glob(os.path.join(pdf_folder_path, "*.pdf"))
+   
+    if not pdf_files:
+        print(f"No PDF files found in {pdf_folder_path}")
+        return
+   
+    print(f"Found {len(pdf_files)} PDF files to process:")
+    for pdf_file in pdf_files:
+        print(f"  - {os.path.basename(pdf_file)}")
+   
+    print(f"\nStarting batch processing with keyword-based 5th iteration using Azure OpenAI GPT-4.1-mini...")
+    print(f"Output folder: {output_folder}")
+    print("=" * 60)
+   
+    # Process each PDF
+    successful_processing = []
+    failed_processing = []
+   
+    for i, pdf_file in enumerate(pdf_files, 1):
+        print(f"\n[{i}/{len(pdf_files)}] Processing: {os.path.basename(pdf_file)}")
+       
+        try:
+            result = process_single_pdf_with_keyword_fifth_iteration(
+                pdf_path=pdf_file,
+                queries_csv_path=queries_csv_path,
+                previous_year_data=previous_year_data,
+                output_folder=output_folder,
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version,
+                deployment_name=deployment_name
+            )
+           
+            if result is not None:
+                successful_processing.append(os.path.basename(pdf_file))
+            else:
+                failed_processing.append(os.path.basename(pdf_file))
+               
+        except Exception as e:
+            print(f"Failed to process {os.path.basename(pdf_file)}: {str(e)}")
+            failed_processing.append(os.path.basename(pdf_file))
+   
+    if successful_processing:
+        print(f"\nSuccessfully processed:")
+        for file in successful_processing:
+            print(f"  ✓ {file}")
+   
+    if failed_processing:
+        print(f"\nFailed to process:")
+        for file in failed_processing:
+            print(f"  ✗ {file}")
 
-def main_chained():
-    """Example usage for chained queries using previous results"""
-    pdf_path = r"Kalyan June 24.pdf"
-    previous_results_path = r"llama_query_results.csv"  
-    new_queries_csv_path = r"EWS_prompts_v2_iteration2.xlsx"  
+def main_keyword_based_processing():
+    """
+    Main function to run the keyword-based batch processing with Azure OpenAI GPT-4.1-mini
+    Configure your Azure OpenAI credentials here
+    """
     
-    pipeline = LlamaQueryPipeline(
-        pdf_path=pdf_path,
-        queries_csv_path=None,
-        previous_results_path=previous_results_path
+    # Configuration
+    pdf_folder_path = r"ola_pdf"
+    queries_csv_path = r"EWS_prompts_v2.xlsx"      
+    output_folder = r"ola_results_keyword_based_azure_openai"
+    
+    api_key = "8496bd1da40242a2"
+    azure_endpoint = "https://crisil-pp-gpt.op"
+    api_version = "2025-01-01-preview"
+    deployment_name = "gpt-4.1-mini"
+  
+    previous_year_data = """
+Previous reported Debt	 5,684 Cr	Mar-24
+Current quarter ebidta	 (525) Cr	Mar-25
+Previous reported asset value	 7,735 Cr	Mar-24
+Previous reported receivable days	12 days	Mar-24
+Previous reported payable days	112days	Mar-24
+Previous reported revenue	 1,045 Cr	Dec-24
+Previous reported profitability	 (460)Cr	Dec-24
+Previous reported operating margin	-44.00%	Dec-24
+Previous reported cash balance	 1,663 Cr	Mar-24
+Previous reported current liabilities	 1,071 Cr	Mar-24 
+"""
+ 
+    run_multiple_pdfs_keyword_based_pipeline(
+        pdf_folder_path=pdf_folder_path,
+        queries_csv_path=queries_csv_path,
+        previous_year_data=previous_year_data,
+        output_folder=output_folder,
+        api_key=api_key,
+        azure_endpoint=azure_endpoint,
+        api_version=api_version,
+        deployment_name=deployment_name
     )
-    
-    chained_results_df = pipeline.query_llama_with_chaining(new_queries_csv_path, iteration_number=2)
-    
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    chained_output_file = f"llama_chained_results_iteration2_{timestamp}.csv"
-    chained_results_df.to_csv(chained_output_file, index=False)
-    
-    return chained_results_df
-
-
+ 
 if __name__ == "__main__":
-    all_results = run_four_iteration_pipeline()
+    main_keyword_based_processing()
