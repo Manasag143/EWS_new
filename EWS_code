@@ -849,6 +849,15 @@ def parse_individual_risk_assessment(response_text: str) -> Dict[str, Any]:
     # Clean up the risk level
     risk_level = risk_level.replace('[', '').replace(']', '').strip()
     
+    # Truncate summary to 1-2 lines (approximately 100-150 characters)
+    if len(summary) > 150:
+        # Find the first sentence or reasonable break point
+        sentences = summary.split('. ')
+        if len(sentences) > 1 and len(sentences[0]) < 150:
+            summary = sentences[0] + '.'
+        else:
+            summary = summary[:147] + '...'
+    
     return {
         'summary': summary,
         'risk_level': risk_level
@@ -879,41 +888,65 @@ def calculate_flag_distribution(criteria_results: List[Dict]) -> Dict[str, int]:
     
     return distribution
 
-def create_enhanced_summary(criteria_results: List[Dict]) -> Dict[str, List[str]]:
-    """Create enhanced summary by risk categories"""
+def create_enhanced_summary(criteria_results: List[Dict]) -> List[str]:
+    """Create enhanced summary for HIGH RISK flags only with 1-2 line summaries"""
     
-    summary_by_risk = {
-        'High Risk Flags': [],
-        'Medium Risk Flags': [],
-        'Low Risk Flags': []
-    }
+    high_risk_summaries = []
     
     for result in criteria_results:
-        criteria_name = result.get('criteria', 'Unknown')
         parsed = result.get('parsed_result', {})
         risk_level = parsed.get('risk_level', 'Not_Applicable')
         summary = parsed.get('summary', 'No summary available')
         
-        # Skip if no actual concern found
-        if 'Not_Applicable' in risk_level or 'No' in summary:
-            continue
+        # Only include HIGH RISK flags (matching original code logic)
+        if 'High' in risk_level and 'No' not in summary and 'Not_Applicable' not in risk_level:
+            # Ensure summary is 1-2 lines only
+            if len(summary) > 150:
+                sentences = summary.split('. ')
+                if len(sentences) > 1 and len(sentences[0]) < 150:
+                    summary = sentences[0] + '.'
+                else:
+                    summary = summary[:147] + '...'
             
-        # Format the summary entry
-        formatted_summary = f"{criteria_name.replace('_', ' ').title()}: {summary}"
-        
-        # Categorize by risk level
-        if 'High' in risk_level:
-            summary_by_risk['High Risk Flags'].append(formatted_summary)
-        elif 'Medium' in risk_level:
-            summary_by_risk['Medium Risk Flags'].append(formatted_summary)
-        elif 'Low' in risk_level:
-            summary_by_risk['Low Risk Flags'].append(formatted_summary)
+            high_risk_summaries.append(summary)
     
-    return summary_by_risk
+    return high_risk_summaries
 
-def create_enhanced_word_document(pdf_name: str, company_info: str, flag_distribution: Dict[str, int],
-                                enhanced_summary: Dict[str, List[str]], output_folder: str) -> str:
-    """Create an enhanced formatted Word document with the analysis results"""
+def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
+    """Parse the 4th iteration summary response by categories - SAME AS ORIGINAL"""
+    categories_summary = {}
+   
+    # Split by ### headers
+    sections = fourth_response.split('###')
+   
+    for section in sections:
+        if not section.strip():
+            continue
+           
+        lines = section.split('\n')
+        category_name = ""
+        bullets = []
+       
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('*') and not line.startswith('-'):
+                # This is likely the category name
+                category_name = line.strip()
+            elif line.startswith('*') or line.startswith('-'):
+                # This is a bullet point
+                bullet_text = line[1:].strip()  # Remove bullet symbol
+                if bullet_text:
+                    bullets.append(bullet_text)
+       
+        if category_name and bullets:
+            categories_summary[category_name] = bullets
+   
+    return categories_summary
+
+def create_word_document(pdf_name: str, company_info: str, flag_distribution: Dict[str, int],
+                        high_risk_summaries: List[str], summary_by_categories: Dict[str, List[str]], 
+                        output_folder: str) -> str:
+    """Create a formatted Word document with the analysis results - SAME FORMAT AS ORIGINAL"""
    
     # Create new document
     doc = Document()
@@ -926,51 +959,72 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, flag_distrib
     flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
     flag_dist_heading.runs[0].bold = True
    
-    # Create table for flag distribution
-    table = doc.add_table(rows=5, cols=2)
+    # Create table for flag distribution (SAME AS ORIGINAL - 4 rows, not 5)
+    table = doc.add_table(rows=4, cols=2)
     table.style = 'Table Grid'
    
-    # Add table headers and data
+    # Add table headers and data using extracted counts (SAME AS ORIGINAL)
+    high_count = flag_distribution['High']
+    medium_count = flag_distribution['Medium']
+    low_count = flag_distribution['Low']
+    total_count = high_count + medium_count + low_count
+   
     table.cell(0, 0).text = 'High Risk'
-    table.cell(0, 1).text = str(flag_distribution['High'])
+    table.cell(0, 1).text = str(high_count)
     table.cell(1, 0).text = 'Medium Risk'
-    table.cell(1, 1).text = str(flag_distribution['Medium'])
+    table.cell(1, 1).text = str(medium_count)
     table.cell(2, 0).text = 'Low Risk'
-    table.cell(2, 1).text = str(flag_distribution['Low'])
-    table.cell(3, 0).text = 'Not Applicable'
-    table.cell(3, 1).text = str(flag_distribution['Not_Applicable'])
-    table.cell(4, 0).text = 'Total Flags'
-    table.cell(4, 1).text = str(sum(flag_distribution.values()))
+    table.cell(2, 1).text = str(low_count)
+    table.cell(3, 0).text = 'Total Flags'
+    table.cell(3, 1).text = str(total_count)
    
     # Make table headers bold
-    for i in range(5):
+    for i in range(4):
         table.cell(i, 0).paragraphs[0].runs[0].bold = True
    
     # Add space
     doc.add_paragraph('')
    
-    # Add Risk Categories sections
-    for category, flags in enhanced_summary.items():
-        if flags:  # Only add if there are flags
-            category_heading = doc.add_heading(category, level=2)
-            category_heading.runs[0].bold = True
+    # Add High Risk Flags section only (SAME AS ORIGINAL)
+    if high_risk_summaries:
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+       
+        for flag in high_risk_summaries:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(flag)
+    else:
+        # If no high risk flags, add a note (SAME AS ORIGINAL)
+        high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+        high_risk_heading.runs[0].bold = True
+        no_flags_para = doc.add_paragraph('No high risk flags identified.')
+   
+    # Add horizontal line (SAME AS ORIGINAL)
+    doc.add_paragraph('_' * 50)
+   
+    # Add Summary section (SAME AS ORIGINAL)
+    summary_heading = doc.add_heading('Summary', level=1)
+    summary_heading.runs[0].bold = True
+   
+    # Add categorized summary (SAME AS ORIGINAL)
+    for category, bullets in summary_by_categories.items():
+        if bullets:  # Only add if there are bullets
+            # Add category as subheading
+            cat_heading = doc.add_heading(category, level=2)
+            cat_heading.runs[0].bold = True
            
-            for flag in flags:
+            # Add bullet points for this category
+            for bullet in bullets:
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
-                p.add_run(flag)
+                p.add_run(bullet)
            
             # Add space between categories
             doc.add_paragraph('')
-    
-    # If no high/medium/low risk flags, add a note
-    if not any(enhanced_summary.values()):
-        no_flags_heading = doc.add_heading('Risk Assessment:', level=2)
-        no_flags_heading.runs[0].bold = True
-        no_flags_para = doc.add_paragraph('No significant risk flags identified in the analysis.')
    
-    # Save document
-    doc_filename = f"{pdf_name}_Enhanced_Report.docx"
+    # Save document (SAME FILENAME AS ORIGINAL)
+    doc_filename = f"{pdf_name}_Report.docx"
     doc_path = os.path.join(output_folder, doc_filename)
     doc.save(doc_path)
    
@@ -1202,22 +1256,27 @@ Answer:"""
         print("Calculating flag distribution...")
         flag_distribution = calculate_flag_distribution(criteria_results)
         
-        # Create enhanced summary
-        print("Creating enhanced summary...")
-        enhanced_summary = create_enhanced_summary(criteria_results)
+        # Create enhanced summary for HIGH RISK flags only (1-2 lines each)
+        print("Creating high risk flag summaries...")
+        high_risk_summaries = create_enhanced_summary(criteria_results)
+        
+        # Parse summary by categories from 4th iteration (SAME AS ORIGINAL)
+        print("Parsing summary by categories...")
+        summary_by_categories = parse_summary_by_categories(fourth_response)
        
         # Extract company information from first page
         print("Extracting company information...")
         company_info = extract_company_info_from_pdf(pdf_path, pipeline_1st.llm)
         print(f"Identified company: {company_info}")
        
-        # Create Enhanced Word document
-        print("Creating enhanced Word document...")
-        word_doc_path = create_enhanced_word_document(
+        # Create Word document (SAME FORMAT AS ORIGINAL)
+        print("Creating Word document...")
+        word_doc_path = create_word_document(
             pdf_name=pdf_name,
             company_info=company_info,
             flag_distribution=flag_distribution,
-            enhanced_summary=enhanced_summary,
+            high_risk_summaries=high_risk_summaries,
+            summary_by_categories=summary_by_categories,
             output_folder=output_folder
         )
        
