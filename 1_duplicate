@@ -185,51 +185,140 @@ Return only the list, no other text.
 
 def classify_flag_against_criteria(flag: str, criteria_definitions: Dict[str, str], 
                                  previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Classify a single flag against 15 criteria"""
+    """Classify a single flag against 15 criteria with strict validation"""
     criteria_list = "\n".join([f"{i+1}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_definitions.items())])
     
     prompt = f"""
-You are a financial risk analyst. Classify this red flag against the given criteria.
+You are a strict financial risk analyst. Classify this red flag against the given criteria with VERY HIGH STANDARDS.
 
 RED FLAG: "{flag}"
 
-CRITERIA:
+CRITERIA (with strict thresholds):
 {criteria_list}
 
-PREVIOUS YEAR DATA:
+PREVIOUS YEAR DATA FOR COMPARISON:
 {previous_year_data}
 
-INSTRUCTIONS:
-1. Check if this flag matches ANY of the 15 criteria
-2. If it matches, classify as "High" or "Low" based on the criterion
-3. If no match, classify as "Low" by default
-4. Return in specified format
+CRITICAL INSTRUCTIONS:
+1. Be EXTREMELY STRICT in classification - only mark as "High" if there is CLEAR QUANTITATIVE EVIDENCE that exceeds the specific thresholds
+2. The flag must EXPLICITLY mention numbers, percentages, or amounts that can be compared to the criteria thresholds
+3. For qualitative issues (management, operational, regulatory), only mark "High" if there are SEVERE concerns explicitly mentioned
+4. If the flag is vague, general, or lacks specific data points, classify as "Low"
+5. DEFAULT to "Low" unless there is overwhelming evidence for "High"
+6. Only match a criterion if the flag DIRECTLY relates to that specific metric with quantifiable data
+
+EXAMPLES OF STRICT CLASSIFICATION:
+- "Debt increased" → Low (no specific percentage mentioned)
+- "Debt increased by 45%" → High (exceeds 30% threshold for debt_increase)
+- "Margins under pressure" → Low (no specific percentage mentioned)
+- "Operating margin fell by 30%" → High (exceeds 25% threshold for margin_decline)
+- "Management concerns" → Low (unless specific departures mentioned)
+- "CEO resigned unexpectedly" → High (clear management turnover)
 
 OUTPUT FORMAT:
-Matched_Criteria: [criteria_name or "None"]
-Risk_Level: [High/Low]  
-Reasoning: [Brief explanation]
+Matched_Criteria: [exact criteria_name or "None"]
+Risk_Level: [High/Low]
+Reasoning: [Detailed explanation with specific numbers/evidence or lack thereof]
 """
     
-    response = llm._call(prompt, max_tokens=500)
+    response = llm._call(prompt, max_tokens=800)
     
     result = {
         'matched_criteria': 'None',
         'risk_level': 'Low', 
-        'reasoning': 'No specific reasoning provided'
+        'reasoning': 'No specific quantitative evidence found for high risk classification'
     }
     
     lines = response.strip().split('\n')
     for line in lines:
         if line.startswith('Matched_Criteria:'):
-            result['matched_criteria'] = line.split(':', 1)[1].strip()
+            matched = line.split(':', 1)[1].strip()
+            # Validate that matched criteria exists in our definitions
+            if matched in criteria_definitions or matched == "None":
+                result['matched_criteria'] = matched
         elif line.startswith('Risk_Level:'):
-            result['risk_level'] = line.split(':', 1)[1].strip()
+            risk_level = line.split(':', 1)[1].strip()
+            # Force to Low if no clear criteria match
+            if result['matched_criteria'] == 'None':
+                result['risk_level'] = 'Low'
+            else:
+                result['risk_level'] = risk_level if risk_level in ['High', 'Low'] else 'Low'
         elif line.startswith('Reasoning:'):
             result['reasoning'] = line.split(':', 1)[1].strip()
     
     return result
 
+def generate_detailed_high_risk_summary(high_risk_flags: List[str], classification_results: List[Dict], 
+                                      context: str, llm: AzureOpenAILLM) -> List[str]:
+    """Generate detailed 2-3 line summaries for each high-risk flag"""
+    detailed_summaries = []
+    
+    # Get classification details for high-risk flags
+    high_risk_details = {result['flag']: result for result in classification_results 
+                        if result['risk_level'].lower() == 'high'}
+    
+    for flag in high_risk_flags:
+        if flag in high_risk_details:
+            classification_detail = high_risk_details[flag]
+            
+            prompt = f"""
+Based on the document context and classification details, provide a detailed 2-3 line summary for this high-risk flag.
+
+DOCUMENT CONTEXT:
+{context[:3000]}  
+
+HIGH-RISK FLAG: "{flag}"
+MATCHED CRITERIA: {classification_detail['matched_criteria']}
+CLASSIFICATION REASONING: {classification_detail['reasoning']}
+
+INSTRUCTIONS:
+1. Provide EXACTLY 2-3 lines of detailed explanation
+2. Include specific numbers, percentages, or quantitative data if mentioned in the context
+3. Explain WHY this is considered high risk based on the criteria
+4. Be factual and specific, not generic
+5. Focus on the business impact and financial implications
+
+FORMAT:
+Line 1: [Specific description of the issue with quantitative data]
+Line 2: [Business impact and why it exceeds risk thresholds]  
+Line 3: [Financial implications or operational concerns if applicable]
+
+Example:
+Line 1: Debt increased by 45% from INR 5,684 Cr to INR 8,242 Cr, significantly exceeding the 30% threshold for high risk classification.
+Line 2: This substantial debt increase indicates potential financial strain and reduced financial flexibility for future operations.
+Line 3: Higher debt levels may lead to increased interest expenses and potential covenant violations, impacting cash flow management.
+"""
+            
+            try:
+                summary_response = llm._call(prompt, max_tokens=600)
+                
+                # Clean and format the response
+                lines = [line.strip() for line in summary_response.strip().split('\n') if line.strip()]
+                
+                # Extract meaningful lines (remove "Line 1:", "Line 2:" prefixes if present)
+                clean_lines = []
+                for line in lines:
+                    # Remove line prefixes
+                    clean_line = re.sub(r'^Line \d+:\s*', '', line)
+                    if clean_line and len(clean_line) > 10:  # Ensure meaningful content
+                        clean_lines.append(clean_line)
+                
+                # Take first 2-3 meaningful lines
+                if len(clean_lines) >= 2:
+                    detailed_summary = ' '.join(clean_lines[:3])  # Join first 2-3 lines
+                    detailed_summaries.append(detailed_summary)
+                else:
+                    # Fallback if response is poor
+                    detailed_summaries.append(f"{flag} - This flag indicates significant financial risk based on quantitative thresholds. The issue requires immediate management attention and monitoring. Further analysis of underlying causes and mitigation strategies is recommended.")
+                    
+            except Exception as e:
+                print(f"Error generating detailed summary for flag: {e}")
+                detailed_summaries.append(f"{flag} - High-risk flag requiring detailed analysis and management attention.")
+                
+            time.sleep(0.3)  # Rate limiting
+        else:
+            detailed_summaries.append(f"{flag} - High-risk classification requires immediate review and action.")
+    
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
     categories_summary = {}
@@ -258,7 +347,8 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     return categories_summary
  
 def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
-                        high_risk_flags: List[str], summary_by_categories: Dict[str, List[str]], 
+                        high_risk_flags: List[str], detailed_high_risk_summaries: List[str],
+                        summary_by_categories: Dict[str, List[str]], 
                         output_folder: str) -> str:
     """Create a formatted Word document with analysis results"""
    
@@ -297,16 +387,29 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
        
         doc.add_paragraph('')
        
-        # High Risk Flags section
+        # High Risk Flags section with detailed summaries
         if high_risk_flags and len(high_risk_flags) > 0:
             high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
             if len(high_risk_heading.runs) > 0:
                 high_risk_heading.runs[0].bold = True
            
-            for flag in high_risk_flags:
+            for i, flag in enumerate(high_risk_flags):
+                # Add flag as bullet point
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
-                p.add_run(str(flag))
+                
+                # Add flag title in bold
+                flag_run = p.add_run(f"Flag {i+1}: {str(flag)}")
+                flag_run.bold = True
+                
+                # Add detailed summary if available
+                if i < len(detailed_high_risk_summaries) and detailed_high_risk_summaries[i]:
+                    detail_para = doc.add_paragraph()
+                    detail_para.style = 'Normal'
+                    detail_para.add_run(f"   Details: {detailed_high_risk_summaries[i]}")
+                
+                # Add space between flags
+                doc.add_paragraph('')
         else:
             high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
             if len(high_risk_heading.runs) > 0:
@@ -607,6 +710,14 @@ Answer:"""
         
         print(f"  Classification complete: {risk_counts['High']} High, {risk_counts['Low']} Low")
         
+        # Generate detailed summaries for high-risk flags
+        detailed_high_risk_summaries = []
+        if len(high_risk_flags) > 0:
+            print("  Generating detailed summaries for high-risk flags...")
+            detailed_high_risk_summaries = generate_detailed_high_risk_summary(
+                high_risk_flags, classification_results, context, llm
+            )
+        
         # Extract company info and create Word document
         print("Creating Word document...")
         try:
@@ -618,6 +729,7 @@ Answer:"""
                 company_info=company_info,
                 risk_counts=risk_counts,
                 high_risk_flags=high_risk_flags,
+                detailed_high_risk_summaries=detailed_high_risk_summaries,
                 summary_by_categories=summary_by_categories,
                 output_folder=output_folder
             )
