@@ -198,7 +198,7 @@ EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
         
         # Apply additional aggressive deduplication
         final_flags = []
-        seen_keywords = set()
+        seen_keywords = []  # Changed from set to list
         
         for flag in flags_list:
             if not flag or len(flag) <= 5:
@@ -219,7 +219,7 @@ EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
             
             if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
-                seen_keywords.add(words)
+                seen_keywords.append(words)  # Append the set to the list
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
@@ -325,7 +325,7 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     
     # First, deduplicate the high_risk_flags themselves
     unique_high_risk_flags = []
-    seen_flag_keywords = set()
+    seen_flag_keywords = []  # Changed from set to list
     
     for flag in high_risk_flags:
         normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
@@ -341,10 +341,10 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
         
         if not is_duplicate_flag:
             unique_high_risk_flags.append(flag)
-            seen_flag_keywords.add(flag_words)
+            seen_flag_keywords.append(flag_words)  # Append the set to the list
     
     concise_summaries = []
-    seen_summary_keywords = set()
+    seen_summary_keywords = []  # Changed from set to list
     
     for flag in unique_high_risk_flags:
         prompt = f"""
@@ -408,7 +408,7 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             
             if not is_duplicate_summary:
                 concise_summaries.append(concise_summary)
-                seen_summary_keywords.add(summary_words)
+                seen_summary_keywords.append(summary_words)  # Append the set to the list
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
