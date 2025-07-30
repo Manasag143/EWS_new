@@ -1,4 +1,5 @@
-criteria_keywords = {
+ Define strict keyword patterns for each criteria
+    criteria_keywords = {
         "debt_increase": ["debt increase", "debt increased", "debt rising", "debt growth", "higher debt", "debt went up", "debt levels", "borrowing increase"],
         "provisioning": ["provision", "write-off", "write off", "writeoff", "bad debt", "impairment", "credit loss"],
         "asset_decline": ["asset decline", "asset fall", "asset decrease", "asset value down", "asset reduction", "asset impairment"],
@@ -15,3 +16,11 @@ criteria_keywords = {
         "market_competition": ["competition", "competitive", "market share", "competitor", "market pressure", "competitive pressure"],
         "operational_disruptions": ["operational", "supply chain", "production", "manufacturing", "disruption", "operational issues"]
     }
+    
+    criteria_list = "\n".join([f"{i+1}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_definitions.items())])
+    
+    # Build keyword list for prompt
+    keywords_section = "\nKEYWORDS FOR EACH CRITERIA:\n"
+    for criteria, keywords in criteria_keywords.items():
+        keywords_section += f"  * {criteria}: {', '.join(keywords)}\n"
+    
