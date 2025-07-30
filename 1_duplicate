@@ -139,67 +139,87 @@ You are an expert financial analyst tasked with extracting TRULY UNIQUE red flag
 RED FLAGS ANALYSIS TO PROCESS:
 {response_text}
 
-STRICT DEDUPLICATION RULES:
+ULTRA-STRICT DEDUPLICATION RULES:
 1. If multiple flags refer to the SAME underlying financial issue, merge them into ONE comprehensive flag
 2. Remove any flag that is a subset or variation of a broader flag
 3. Combine similar concepts: "Debt increased" + "Higher debt levels" + "Rising debt burden" → "Debt levels increased significantly"
 4. Remove generic flags that don't add specific value
-5. Maximum 10-12 truly unique, specific flags only
-6. Each flag must represent a DISTINCT financial concern
+5. Maximum 8-10 truly unique, specific flags only
+6. Each flag must represent a COMPLETELY DISTINCT financial concern
 7. Prioritize flags with specific numbers/percentages over generic statements
+8. If two flags are even slightly similar, merge them or keep only the more specific one
+9. AGGRESSIVE deduplication - when in doubt, merge or eliminate
 
 EXAMPLES OF WHAT TO MERGE:
 - "Revenue declined" + "Sales decreased" + "Top line fell" → "Revenue/sales declined"
 - "Margin pressure" + "Profitability issues" + "Reduced margins" → "Margin compression and profitability pressure"
 - "Cash flow problems" + "Liquidity concerns" + "Working capital issues" → "Cash flow and liquidity challenges"
+- "Debt issues" + "Borrowing concerns" + "Leverage problems" → "Debt and leverage concerns"
 
-OUTPUT REQUIREMENTS:
+ULTRA-STRICT OUTPUT REQUIREMENTS:
 - Return ONLY a clean Python list format
 - Each flag should be a concise, specific statement (5-15 words)
-- No duplicates, no similar flags, no overlapping concerns
-- Focus on the most critical and distinct issues only
+- ZERO duplicates, ZERO similar flags, ZERO overlapping concerns
+- Focus on the most critical and completely distinct issues only
+- Apply MAXIMUM deduplication - be ruthless in eliminating similarities
 
 Format: ["unique flag 1", "unique flag 2", "unique flag 3", ...]
 
-EXTRACT UNIQUE FLAGS:
+EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
 """
     
     try:
-        response = llm._call(prompt, max_tokens=800, temperature=0.0)
+        response = llm._call(prompt, max_tokens=600, temperature=0.0)
         
         # Try to parse as Python list
         try:
             unique_flags = ast.literal_eval(response.strip())
-            if isinstance(unique_flags, list) and len(unique_flags) <= 15:
-                return [flag.strip() for flag in unique_flags if flag.strip()]
+            if isinstance(unique_flags, list) and len(unique_flags) <= 12:
+                flags_list = [flag.strip() for flag in unique_flags if flag.strip()]
+            else:
+                flags_list = unique_flags[:10] if len(unique_flags) > 10 else unique_flags
         except:
-            pass
+            # Fallback parsing if ast.literal_eval fails
+            lines = response.strip().split('\n')
+            flags_list = []
+            
+            for line in lines:
+                line = line.strip()
+                # Look for quoted strings
+                if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
+                    flag = line[1:-1].strip()
+                    if flag and len(flag) > 5:
+                        flags_list.append(flag)
+                # Look for list items
+                elif line.startswith('- ') or line.startswith('* '):
+                    flag = line[2:].strip()
+                    if flag and len(flag) > 5:
+                        flags_list.append(flag)
         
-        # Fallback parsing if ast.literal_eval fails
-        lines = response.strip().split('\n')
-        unique_flags = []
-        
-        for line in lines:
-            line = line.strip()
-            # Look for quoted strings
-            if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
-                flag = line[1:-1].strip()
-                if flag and len(flag) > 5:
-                    unique_flags.append(flag)
-            # Look for list items
-            elif line.startswith('- ') or line.startswith('* '):
-                flag = line[2:].strip()
-                if flag and len(flag) > 5:
-                    unique_flags.append(flag)
-        
-        # Remove duplicates and limit count
-        seen = set()
+        # Apply additional aggressive deduplication
         final_flags = []
-        for flag in unique_flags:
-            flag_lower = flag.lower()
-            if flag_lower not in seen and len(final_flags) < 12:
-                seen.add(flag_lower)
+        seen_keywords = set()
+        
+        for flag in flags_list:
+            if not flag or len(flag) <= 5:
+                continue
+                
+            # Create normalized version for comparison
+            normalized = re.sub(r'[^\w\s]', '', flag.lower()).strip()
+            words = set(normalized.split())
+            
+            # Check for keyword overlap with existing flags
+            is_duplicate = False
+            for existing_keywords in seen_keywords:
+                # If more than 60% of words overlap, consider it duplicate
+                overlap = len(words.intersection(existing_keywords)) / max(len(words), len(existing_keywords))
+                if overlap > 0.6:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
+                seen_keywords.add(words)
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
@@ -303,9 +323,30 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     if not high_risk_flags:
         return []
     
-    concise_summaries = []
+    # First, deduplicate the high_risk_flags themselves
+    unique_high_risk_flags = []
+    seen_flag_keywords = set()
     
     for flag in high_risk_flags:
+        normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
+        flag_words = set(normalized_flag.split())
+        
+        # Check for keyword overlap with existing flags
+        is_duplicate_flag = False
+        for existing_keywords in seen_flag_keywords:
+            overlap = len(flag_words.intersection(existing_keywords)) / max(len(flag_words), len(existing_keywords))
+            if overlap > 0.7:  # High threshold for flag deduplication
+                is_duplicate_flag = True
+                break
+        
+        if not is_duplicate_flag:
+            unique_high_risk_flags.append(flag)
+            seen_flag_keywords.add(flag_words)
+    
+    concise_summaries = []
+    seen_summary_keywords = set()
+    
+    for flag in unique_high_risk_flags:
         prompt = f"""
 Based on the original PDF context, create a VERY concise 1-2 line summary for this high risk flag.
 
@@ -322,6 +363,7 @@ STRICT REQUIREMENTS:
 5. Do NOT exceed 2 lines under any circumstances
 6. Do NOT start with "Summary:" or any prefix
 7. Provide ONLY the factual summary content
+8. Make it UNIQUE - avoid repeating information from other summaries
 
 OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
 
@@ -334,7 +376,7 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             clean_response = response.strip()
             
             # Remove common prefixes that might appear
-            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:"]
+            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
             for prefix in prefixes_to_remove:
                 if clean_response.startswith(prefix):
                     clean_response = clean_response[len(prefix):].strip()
@@ -352,12 +394,26 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             # Ensure proper ending
             if not concise_summary.endswith('.'):
                 concise_summary += '.'
-                
-            concise_summaries.append(concise_summary)
+            
+            # Check for duplicate content in summaries
+            normalized_summary = re.sub(r'[^\w\s]', '', concise_summary.lower()).strip()
+            summary_words = set(normalized_summary.split())
+            
+            is_duplicate_summary = False
+            for existing_keywords in seen_summary_keywords:
+                overlap = len(summary_words.intersection(existing_keywords)) / max(len(summary_words), len(existing_keywords))
+                if overlap > 0.8:  # Very high threshold for summary deduplication
+                    is_duplicate_summary = True
+                    break
+            
+            if not is_duplicate_summary:
+                concise_summaries.append(concise_summary)
+                seen_summary_keywords.add(summary_words)
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
-            concise_summaries.append(f"{flag}. Review required based on analysis.")
+            if len(concise_summaries) < len(unique_high_risk_flags):  # Only add fallback if we haven't added this one yet
+                concise_summaries.append(f"{flag}. Review required based on analysis.")
     
     return concise_summaries
 
@@ -410,18 +466,36 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             # Generate concise summaries for high risk flags
             concise_summaries = generate_strict_high_risk_summary(high_risk_flags, context, llm)
             
-            # Remove duplicates from summaries
-            unique_summaries = []
-            seen_summaries = set()
+            # Final deduplication check at Word document level - more aggressive
+            final_unique_summaries = []
+            seen_content = set()
             
             for summary in concise_summaries:
-                # Create a normalized version for comparison (lowercase, remove punctuation)
-                normalized = re.sub(r'[^\w\s]', '', summary.lower()).strip()
-                if normalized not in seen_summaries and summary.strip():
-                    seen_summaries.add(normalized)
-                    unique_summaries.append(summary)
+                if not summary or not summary.strip():
+                    continue
+                    
+                # Create multiple normalized versions for comparison
+                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
+                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
+                
+                # Check if this content is substantially different
+                is_unique = True
+                for seen in seen_content:
+                    # Calculate similarity
+                    words1 = set(normalized2.split())
+                    words2 = set(seen.split())
+                    if len(words1) == 0 or len(words2) == 0:
+                        continue
+                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
+                    if similarity > 0.6:  # If more than 60% similar, consider duplicate
+                        is_unique = False
+                        break
+                
+                if is_unique:
+                    final_unique_summaries.append(summary)
+                    seen_content.add(normalized2)
             
-            for summary in unique_summaries:
+            for summary in final_unique_summaries:
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
                 p.add_run(summary)
@@ -718,6 +792,22 @@ Answer:"""
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
+        
+        if high_risk_flags:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            for i, flag in enumerate(high_risk_flags, 1):
+                print(f"  {i}. {flag}")
+        else:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            print("  No high risk flags identified")
+        
+        if low_risk_flags:
+            print(f"\n--- LOW RISK FLAGS ---")
+            for i, flag in enumerate(low_risk_flags, 1):
+                print(f"  {i}. {flag}")
+        else:
+            print(f"\n--- LOW RISK FLAGS ---")
+            print("  No low risk flags identified")
         
         # Extract company info and create Word document
         print("\nCreating Word document...")
