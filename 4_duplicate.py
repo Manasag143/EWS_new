@@ -24,7 +24,6 @@ flowchart TD
 
 
 
-
 flowchart TD
     FromIter4([From<br/>Iteration 4]) --> Iter5[Iteration 5<br/>Classification<br/>• Most critical stage<br/>• Extract unique flags<br/>• Classify each flag]
     
@@ -34,7 +33,7 @@ flowchart TD
     
     Display --> Classify[Classify Each Flag<br/>• Check 15 criteria<br/>• Keyword matching<br/>• Threshold checking]
     
-    Classify --> Keywords{Keyword Match?<br/>• debt_increase: debt rising<br/>• revenue_decline: sales fall<br/>• margin_decline: margin pressure<br/>• cash_balance: cash decline<br/>• management_issues: CEO change<br/>• + 10 more criteria}
+    Classify --> Keywords{Keyword Match?<br/>15 Criteria Check<br/>debt_increase<br/>revenue_decline<br/>margin_decline<br/>cash_balance<br/>management_issues<br/>and 10 more}
     
     Keywords -->|No Match| Low[Low Risk<br/>• No keyword found<br/>• Default classification<br/>• Add to low_risk_flags]
     
