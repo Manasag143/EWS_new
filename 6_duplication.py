@@ -798,132 +798,208 @@ Provide structured output with company name, quarter, financial year, and format
 # ENHANCED WORD DOCUMENT GENERATION
 # =====================================================
 
-def create_enhanced_word_document(pipeline_result: PipelineResult, output_folder: str) -> str:
-    """Create enhanced Word document from pipeline results"""
+def generate_high_risk_summaries_from_pydantic(pipeline_result: PipelineResult, context: str, llm: AzureOpenAILLM) -> List[str]:
+    """Generate concise summaries for high risk flags using original context - maintains original style"""
+    high_risk_flags = [c for c in pipeline_result.iteration_5.classifications if c.risk_level == "High"]
+    
+    if not high_risk_flags:
+        return []
+    
+    concise_summaries = []
+    
+    for classification in high_risk_flags:
+        prompt = f"""
+Based on the original PDF context, create a VERY concise 1-2 line summary for this high risk flag.
+
+ORIGINAL PDF CONTEXT:
+{context[:2000]}
+
+HIGH RISK FLAG: "{classification.flag_text}"
+
+STRICT REQUIREMENTS:
+1. EXACTLY 1-2 lines (maximum 2 sentences)
+2. Use ONLY specific information from the PDF context
+3. Include exact numbers/percentages if mentioned
+4. Be factual and direct - no speculation
+5. Do NOT exceed 2 lines under any circumstances
+6. Do NOT start with "Summary:" or any prefix
+7. Provide ONLY the factual summary content
+8. Make it UNIQUE - avoid repeating information from other summaries
+
+OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
+"""
+        
+        try:
+            response = llm._call(prompt, max_tokens=100, temperature=0.1)
+            
+            # Clean response - remove any prefixes or labels
+            clean_response = response.strip()
+            
+            # Remove common prefixes that might appear
+            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
+            for prefix in prefixes_to_remove:
+                if clean_response.startswith(prefix):
+                    clean_response = clean_response[len(prefix):].strip()
+            
+            # Split into lines and take first 2
+            summary_lines = [line.strip() for line in clean_response.split('\n') if line.strip()]
+            
+            if len(summary_lines) > 2:
+                concise_summary = '. '.join(summary_lines[:2])
+            elif len(summary_lines) == 0:
+                concise_summary = f"{classification.flag_text}. Requires management attention."
+            else:
+                concise_summary = '. '.join(summary_lines)
+            
+            # Ensure proper ending
+            if not concise_summary.endswith('.'):
+                concise_summary += '.'
+                
+            concise_summaries.append(concise_summary)
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for flag '{classification.flag_text}': {e}")
+            concise_summaries.append(f"{classification.flag_text}. Review required based on analysis.")
+    
+    return concise_summaries
+
+def create_original_style_word_document(pipeline_result: PipelineResult, output_folder: str, context: str, llm: AzureOpenAILLM) -> str:
+    """Create Word document maintaining ORIGINAL style exactly"""
     try:
         doc = Document()
         
-        # Document title
+        # Document title (ORIGINAL STYLE)
         title = doc.add_heading(pipeline_result.company_info.formatted_name, 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         
-        # Executive Summary
-        exec_heading = doc.add_heading('Executive Summary', level=1)
-        exec_heading.runs[0].bold = True
-        doc.add_paragraph(pipeline_result.iteration_4.executive_summary)
-        
-        # Flag Distribution section
-        flag_dist_heading = doc.add_heading('Flag Distribution', level=2)
+        # Flag Distribution section (ORIGINAL STYLE)
+        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
         flag_dist_heading.runs[0].bold = True
         
-        # Create flag distribution table
-        table = doc.add_table(rows=4, cols=2)
+        # Create flag distribution table (ORIGINAL STYLE - 3 rows only)
+        table = doc.add_table(rows=3, cols=2)
         table.style = 'Table Grid'
         
-        # Set table data
-        table.cell(0, 0).text = 'High Risk Flags'
-        table.cell(0, 1).text = str(pipeline_result.iteration_5.high_risk_count)
-        table.cell(1, 0).text = 'Low Risk Flags' 
-        table.cell(1, 1).text = str(pipeline_result.iteration_5.low_risk_count)
-        table.cell(2, 0).text = 'Total Flags'
-        table.cell(2, 1).text = str(len(pipeline_result.iteration_2.unique_flags))
-        table.cell(3, 0).text = 'Overall Risk Score'
-        table.cell(3, 1).text = f"{pipeline_result.iteration_4.overall_risk_score:.1f}/10"
+        high_count = pipeline_result.iteration_5.high_risk_count
+        low_count = pipeline_result.iteration_5.low_risk_count
+        total_count = high_count + low_count
         
-        # Make headers bold
-        for i in range(4):
-            table.cell(i, 0).paragraphs[0].runs[0].bold = True
+        # Safely set table cells (ORIGINAL LOGIC)
+        if len(table.rows) >= 3 and len(table.columns) >= 2:
+            table.cell(0, 0).text = 'High Risk'
+            table.cell(0, 1).text = str(high_count)
+            table.cell(1, 0).text = 'Low Risk'
+            table.cell(1, 1).text = str(low_count)
+            table.cell(2, 0).text = 'Total Flags'
+            table.cell(2, 1).text = str(total_count)
+            
+            # Make headers bold (ORIGINAL STYLE)
+            for i in range(3):
+                if len(table.cell(i, 0).paragraphs) > 0 and len(table.cell(i, 0).paragraphs[0].runs) > 0:
+                    table.cell(i, 0).paragraphs[0].runs[0].bold = True
         
         doc.add_paragraph('')
         
-        # High Risk Summary
+        # High Risk Flags section with concise summaries (ORIGINAL STYLE)
         high_risk_flags = [c for c in pipeline_result.iteration_5.classifications if c.risk_level == "High"]
         
-        if high_risk_flags:
-            high_risk_heading = doc.add_heading('High Risk Summary', level=2)
-            high_risk_heading.runs[0].bold = True
+        if high_risk_flags and len(high_risk_flags) > 0:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
             
-            for flag in high_risk_flags:
+            # Generate concise summaries using ORIGINAL approach but with Pydantic data
+            concise_summaries = generate_high_risk_summaries_from_pydantic(pipeline_result, context, llm)
+            
+            # ORIGINAL deduplication approach adapted for Pydantic data
+            final_unique_summaries = []
+            seen_content = set()
+            
+            for summary in concise_summaries:
+                if not summary or not summary.strip():
+                    continue
+                    
+                # Create multiple normalized versions for comparison (ORIGINAL LOGIC)
+                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
+                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
+                
+                # Check if this content is substantially different (ORIGINAL LOGIC)
+                is_unique = True
+                for seen in seen_content:
+                    words1 = set(normalized2.split())
+                    words2 = set(seen.split())
+                    if len(words1) == 0 or len(words2) == 0:
+                        continue
+                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
+                    if similarity > 0.6:  # ORIGINAL threshold
+                        is_unique = False
+                        break
+                
+                if is_unique:
+                    final_unique_summaries.append(summary)
+                    seen_content.add(normalized2)
+            
+            for summary in final_unique_summaries:
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
-                summary_text = f"{flag.flag_text}"
-                if flag.reasoning:
-                    summary_text += f" - {flag.reasoning}"
-                p.add_run(summary_text)
+                p.add_run(summary)
         else:
-            high_risk_heading = doc.add_heading('High Risk Summary', level=2)
-            high_risk_heading.runs[0].bold = True
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
             doc.add_paragraph('No high risk flags identified.')
         
-        # Top Risks
-        if pipeline_result.iteration_4.top_risks:
-            top_risks_heading = doc.add_heading('Top Identified Risks', level=2)
-            top_risks_heading.runs[0].bold = True
-            
-            for risk in pipeline_result.iteration_4.top_risks:
-                p = doc.add_paragraph()
-                p.style = 'List Bullet'
-                p.add_run(risk)
-        
-        # Horizontal line
+        # Horizontal line (ORIGINAL STYLE)
         doc.add_paragraph('_' * 50)
         
-        # Detailed Summary by Categories
-        summary_heading = doc.add_heading('Detailed Analysis by Category', level=1)
-        summary_heading.runs[0].bold = True
+        # Summary section (ORIGINAL STYLE)
+        summary_heading = doc.add_heading('Summary', level=1)
+        if len(summary_heading.runs) > 0:
+            summary_heading.runs[0].bold = True
         
-        for cat_summary in pipeline_result.iteration_4.category_summaries:
-            # Category heading
-            cat_heading = doc.add_heading(cat_summary.category_name, level=2)
-            cat_heading.runs[0].bold = True
-            
-            # Category overview
-            doc.add_paragraph(f"Flags in category: {cat_summary.total_flags_in_category}")
-            doc.add_paragraph(f"Risk Assessment: {cat_summary.overall_risk_assessment}")
-            
-            # Summary points
-            for point in cat_summary.summary_points:
-                p = doc.add_paragraph()
-                p.style = 'List Bullet'
-                bullet_text = f"[{point.risk_level}] {point.summary_text}"
-                p.add_run(bullet_text)
-            
-            doc.add_paragraph('')
+        # Add categorized summary (ORIGINAL FORMAT but from Pydantic data)
+        if pipeline_result.iteration_4.category_summaries and len(pipeline_result.iteration_4.category_summaries) > 0:
+            for cat_summary in pipeline_result.iteration_4.category_summaries:
+                if cat_summary.summary_points and len(cat_summary.summary_points) > 0:
+                    # Category heading (ORIGINAL STYLE)
+                    cat_heading = doc.add_heading(str(cat_summary.category_name), level=2)
+                    if len(cat_heading.runs) > 0:
+                        cat_heading.runs[0].bold = True
+                    
+                    # Add summary points as bullets (ORIGINAL STYLE)
+                    for point in cat_summary.summary_points:
+                        p = doc.add_paragraph()
+                        p.style = 'List Bullet'
+                        p.add_run(str(point.summary_text))
+                    
+                    doc.add_paragraph('')
+        else:
+            doc.add_paragraph('No categorized summary available.')
         
-        # Technical Details
-        tech_heading = doc.add_heading('Processing Details', level=2)
-        tech_heading.runs[0].bold = True
-        
-        tech_table = doc.add_table(rows=6, cols=2)
-        tech_table.style = 'Table Grid'
-        
-        tech_table.cell(0, 0).text = 'Original Flags Found'
-        tech_table.cell(0, 1).text = str(pipeline_result.iteration_1.total_flags_found)
-        tech_table.cell(1, 0).text = 'After Deduplication'
-        tech_table.cell(1, 1).text = str(pipeline_result.iteration_2.final_count)
-        tech_table.cell(2, 0).text = 'Categories Identified'
-        tech_table.cell(2, 1).text = str(len(pipeline_result.iteration_3.categories))
-        tech_table.cell(3, 0).text = 'Analysis Confidence'
-        tech_table.cell(3, 1).text = f"{pipeline_result.iteration_1.analysis_confidence:.1%}"
-        tech_table.cell(4, 0).text = 'Classification Quality'
-        tech_table.cell(4, 1).text = f"{pipeline_result.iteration_5.overall_quality_score:.1%}"
-        tech_table.cell(5, 0).text = 'Processing Time'
-        tech_table.cell(5, 1).text = f"{pipeline_result.processing_time:.1f} seconds"
-        
-        # Make headers bold
-        for i in range(6):
-            tech_table.cell(i, 0).paragraphs[0].runs[0].bold = True
-        
-        # Save document
-        doc_filename = f"{pipeline_result.pdf_name}_Enhanced_Report.docx"
+        # Save document (ORIGINAL filename format)
+        doc_filename = f"{pipeline_result.pdf_name}_Report.docx"
         doc_path = os.path.join(output_folder, doc_filename)
         doc.save(doc_path)
         
         return doc_path
         
     except Exception as e:
-        logger.error(f"Error creating enhanced Word document: {e}")
-        return None
+        logger.error(f"Error creating Word document: {e}")
+        # Create minimal document as fallback (ORIGINAL LOGIC)
+        try:
+            doc = Document()
+            doc.add_heading(f"{pipeline_result.pdf_name} - Analysis Report", 0)
+            doc.add_paragraph(f"High Risk Flags: {pipeline_result.iteration_5.high_risk_count}")
+            doc.add_paragraph(f"Low Risk Flags: {pipeline_result.iteration_5.low_risk_count}")
+            doc.add_paragraph(f"Total Flags: {pipeline_result.iteration_5.high_risk_count + pipeline_result.iteration_5.low_risk_count}")
+            
+            doc_filename = f"{pipeline_result.pdf_name}_Report_Fallback.docx"
+            doc_path = os.path.join(output_folder, doc_filename)
+            doc.save(doc_path)
+            return doc_path
+        except Exception as e2:
+            logger.error(f"Error creating fallback document: {e2}")
+            return None
 
 # =====================================================
 # MAIN PIPELINE FUNCTION
@@ -1014,9 +1090,9 @@ def process_pdf_with_pydantic_pipeline(pdf_path: str, queries_csv_path: str, pre
             processing_time=processing_time
         )
         
-        # Create Word document
-        print("Creating enhanced Word document...")
-        word_doc_path = create_enhanced_word_document(pipeline_result, output_folder)
+        # Create Word document (ORIGINAL STYLE with added Pydantic info)
+        print("Creating Word document with original style...")
+        word_doc_path = create_original_style_word_document(pipeline_result, output_folder, context, llm)
         if word_doc_path:
             print(f"  Word document created: {word_doc_path}")
         
