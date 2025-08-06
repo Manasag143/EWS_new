@@ -1195,3 +1195,192 @@ Previous reported current liabilities	Mar-22	68Cr
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def classify_flag_against_criteria_strict(flag: str, criteria_definitions: Dict[str, str], 
+                                 previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Classify a single flag against 15 criteria with BALANCED accuracy"""
+    
+    # REDUCED and MORE SPECIFIC keyword mapping - focusing on exact matches
+    criteria_keywords = {
+        "debt_increase": [
+            "debt increase", "debt increased", "debt rising", "debt growth", "higher debt levels",
+            "borrowing increase", "borrowings increased", "total debt increased", "net debt increase"
+        ],
+        "provisioning": [
+            "provision", "provisions", "provisioning", "write-off", "write off", "written off",
+            "bad debt provision", "impairment", "credit loss", "loan loss provision"
+        ],
+        "asset_decline": [
+            "asset decline", "asset decreased", "asset value declined", "asset impairment",
+            "fixed assets declined", "total assets decreased", "asset base declined"
+        ],
+        "receivable_days": [
+            "receivable days", "collection period", "DSO", "days sales outstanding",
+            "receivables collection period", "debtor days increased", "collection days"
+        ],
+        "payable_days": [
+            "payable days", "payment period", "DPO", "days payable outstanding",
+            "creditor days", "supplier payment days", "payment period increased"
+        ],
+        "debt_ebitda": [
+            "debt to ebitda", "debt/ebitda", "debt ebitda ratio", "leverage ratio",
+            "net debt to ebitda", "debt multiple", "leverage multiple"
+        ],
+        "revenue_decline": [
+            "revenue decline", "revenue decreased", "sales decline", "sales decreased",
+            "top line decline", "revenue fall", "sales fall", "income declined"
+        ],
+        "onetime_expenses": [
+            "one-time", "onetime", "one time", "exceptional items", "extraordinary items",
+            "non-recurring", "special charges", "unusual items", "one-off expenses"
+        ],
+        "margin_decline": [
+            "margin decline", "margin decreased", "margin compression", "profitability declined",
+            "gross margin declined", "operating margin fell", "margin pressure"
+        ],
+        "cash_balance": [
+            "cash decline", "cash decreased", "cash balance declined", "liquidity declined",
+            "cash position weakened", "cash shortage", "cash flow negative"
+        ],
+        "short_term_debt": [
+            "short-term debt", "current liabilities increased", "short term borrowing",
+            "working capital deficit", "current debt increased", "near-term obligations"
+        ],
+        "management_issues": [
+            "management change", "CEO resigned", "CFO departure", "leadership change",
+            "management turnover", "executive resignation", "key personnel left"
+        ],
+        "regulatory_compliance": [
+            "regulatory issues", "compliance violation", "regulatory penalty", "legal action",
+            "regulatory investigation", "license suspended", "regulatory warning"
+        ],
+        "market_competition": [
+            "market share declined", "competitive pressure", "competition increased",
+            "competitive threats", "market share loss", "competitive challenges"
+        ],
+        "operational_disruptions": [
+            "operational disruption", "supply chain issues", "production problems",
+            "operational challenges", "manufacturing issues", "supply chain disruption"
+        ]
+    }
+    
+    criteria_list = "\n".join([f"{i+1}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_definitions.items())])
+    
+    keywords_section = "\nSPECIFIC KEYWORDS FOR EACH CRITERIA:\n"
+    for criteria, keywords in criteria_keywords.items():
+        keywords_section += f"  * {criteria}: {', '.join(keywords[:6])}...\n"  # Show only first 6
+        
+    prompt = f"""<role>
+You are a STRICT financial risk classifier with expertise in precise quantitative risk assessment.
+</role>
+
+<system_prompt>
+You excel at accurate classification using EXACT keyword matching and STRICT threshold-based assessment. You have ZERO tolerance for false positives and only classify as High risk when clear evidence exists.
+</system_prompt>
+
+<instruction>
+Classify the given red flag using STRICT rules with emphasis on ACCURACY over sensitivity.
+
+STRICT CLASSIFICATION PROCESS:
+Step 1: EXACT KEYWORD MATCHING
+   - Look for EXACT matches from the specific keyword lists only
+   - Partial matches or similar words do NOT count
+   - Generic words like "increased", "higher", "declined" alone are NOT sufficient
+
+Step 2: THRESHOLD VERIFICATION
+   - If keyword match found → MUST verify against numerical thresholds from previous year data
+   - Without clear threshold satisfaction → Default to Low risk
+   - Only quantifiable concerns with clear thresholds qualify for High risk
+
+Step 3: EVIDENCE REQUIREMENT
+   - High risk requires BOTH: Exact keyword match + Threshold evidence
+   - If threshold data is unclear or missing → Default to Low risk
+   - Qualitative concerns without clear numerical impact → Low risk
+
+CRITICAL RULE: When in doubt → ALWAYS classify as Low risk
+AVOID FALSE POSITIVES: Better to miss a High risk than incorrectly flag Low risk as High
+
+OUTPUT FORMAT (follow exactly):
+Matched_Criteria: [exact criteria name if EXACT keyword found, otherwise "None"]
+Risk_Level: [High ONLY if keyword match AND threshold clearly met, otherwise Low]
+Reasoning: [Explain specific keyword found and threshold assessment]
+</instruction>
+
+<context>
+RED FLAG TO CLASSIFY: "{flag}"
+
+{keywords_section}
+
+CRITERIA DEFINITIONS WITH THRESHOLDS:
+{criteria_list}
+
+PREVIOUS YEAR DATA FOR STRICT THRESHOLD CHECKING:
+{previous_year_data}
+
+CLASSIFICATION PRIORITY: Accuracy > Sensitivity (avoid false positives)
+</context>
+
+Classify with strict accuracy:"""
+    
+    response = llm._call(prompt, max_tokens=300, temperature=0.0)
+    
+    # Initialize with safe defaults
+    result = {
+        'matched_criteria': 'None',
+        'risk_level': 'Low',
+        'reasoning': 'No exact keyword match found'
+    }
+    
+    # Parse response
+    lines = response.strip().split('\n')
+    for line in lines:
+        if line.startswith('Matched_Criteria:'):
+            matched = line.split(':', 1)[1].strip()
+            result['matched_criteria'] = matched if matched not in ["None", ""] else 'None'
+        elif line.startswith('Risk_Level:'):
+            risk_level = line.split(':', 1)[1].strip()
+            result['risk_level'] = risk_level if risk_level in ['High', 'Low'] else 'Low'
+        elif line.startswith('Reasoning:'):
+            result['reasoning'] = line.split(':', 1)[1].strip()
+    
+    # STRICT post-processing - only allow High if criteria clearly matched
+    flag_lower = flag.lower()
+    found_exact_match = False
+    
+    # Check for exact keyword matches only (no partial matches)
+    if result['matched_criteria'] != 'None':
+        criteria_name = result['matched_criteria']
+        if criteria_name in criteria_keywords:
+            for keyword in criteria_keywords[criteria_name]:
+                if keyword.lower() in flag_lower:
+                    found_exact_match = True
+                    break
+    
+    # STRICT FINAL CHECK: Only High if exact match found AND LLM said High
+    if not found_exact_match or result['matched_criteria'] == 'None':
+        result['matched_criteria'] = 'None'
+        result['risk_level'] = 'Low'
+        result['reasoning'] = 'No exact criteria keyword match found - classified as Low risk'
+    elif result['risk_level'] != 'High':
+        # Even if keyword matched, if LLM didn't say High (likely threshold not met), keep as Low
+        result['risk_level'] = 'Low'
+        result['reasoning'] = f"Keyword match found for {result['matched_criteria']} but threshold criteria not clearly satisfied - classified as Low risk"
+    
+    return result
