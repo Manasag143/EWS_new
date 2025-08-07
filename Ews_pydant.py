@@ -7,7 +7,7 @@ import warnings
 import hashlib
 import logging
 import json
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional, Union, Set
 import glob
 from pathlib import Path
 from docx import Document
@@ -23,24 +23,16 @@ from collections import Counter
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize, sent_tokenize
-import spacy
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from nltk.stem import PorterStemmer, WordNetLemmatizer
 
 # Download required NLTK data
 try:
     nltk.download('punkt', quiet=True)
     nltk.download('stopwords', quiet=True)
+    nltk.download('wordnet', quiet=True)
+    nltk.download('averaged_perceptron_tagger', quiet=True)
 except:
     pass
-
-# Load spaCy model
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    print("Warning: spaCy model 'en_core_web_sm' not found. Install with: python -m spacy download en_core_web_sm")
-    nlp = None
 
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.WARNING)
@@ -165,94 +157,215 @@ class PDFExtractor:
             raise
 
 class PythonDeduplicator:
-    """Python-based deduplication class using multiple similarity algorithms"""
+    """Python-based deduplication class using text normalization and keyword extraction"""
     
-    def __init__(self, similarity_threshold: float = 0.8):
+    def __init__(self, similarity_threshold: float = 0.7):
         self.similarity_threshold = similarity_threshold
-        self.stop_words = set(stopwords.words('english')) if 'stopwords' in dir(nltk.corpus) else set()
         
-    def preprocess_text(self, text: str) -> str:
-        """Preprocess text for similarity comparison"""
+        # Initialize NLTK components
+        try:
+            self.stop_words = set(stopwords.words('english'))
+        except:
+            self.stop_words = {
+                'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours',
+                'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers',
+                'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves',
+                'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are',
+                'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does',
+                'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until',
+                'while', 'of', 'at', 'by', 'for', 'with', 'through', 'during', 'before', 'after',
+                'above', 'below', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again',
+                'further', 'then', 'once'
+            }
+        
+        try:
+            self.stemmer = PorterStemmer()
+        except:
+            self.stemmer = None
+            
+        try:
+            self.lemmatizer = WordNetLemmatizer()
+        except:
+            self.lemmatizer = None
+    
+    def normalize_text(self, text: str) -> str:
+        """Normalize text by cleaning and standardizing"""
+        if not text:
+            return ""
+        
         # Convert to lowercase
         text = text.lower()
-        # Remove special characters and extra whitespace
-        text = re.sub(r'[^\w\s]', ' ', text)
+        
+        # Remove special characters but keep spaces, numbers, and letters
+        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
+        
+        # Remove extra whitespace
         text = re.sub(r'\s+', ' ', text)
-        # Remove stop words
-        if self.stop_words:
-            words = text.split()
-            words = [word for word in words if word not in self.stop_words]
-            text = ' '.join(words)
-        return text.strip()
+        
+        # Remove common business terms that don't add meaning for deduplication
+        business_noise = {
+            'quarter', 'fiscal', 'year', 'company', 'business', 'management', 'financial',
+            'report', 'statement', 'analysis', 'discussion', 'results', 'performance'
+        }
+        
+        words = text.split()
+        words = [word for word in words if word not in business_noise]
+        
+        return ' '.join(words).strip()
     
-    def calculate_semantic_similarity(self, text1: str, text2: str) -> float:
-        """Calculate semantic similarity using spaCy if available"""
-        if nlp is None:
+    def extract_keywords(self, text: str) -> Set[str]:
+        """Extract meaningful keywords from text using NLTK"""
+        normalized_text = self.normalize_text(text)
+        
+        if not normalized_text:
+            return set()
+        
+        # Tokenize
+        try:
+            tokens = word_tokenize(normalized_text)
+        except:
+            tokens = normalized_text.split()
+        
+        # Remove stop words and short words
+        keywords = []
+        for token in tokens:
+            if (len(token) >= 3 and 
+                token not in self.stop_words and 
+                not token.isdigit()):
+                keywords.append(token)
+        
+        # Apply stemming/lemmatization if available
+        processed_keywords = set()
+        for keyword in keywords:
+            if self.lemmatizer:
+                try:
+                    processed_keyword = self.lemmatizer.lemmatize(keyword)
+                except:
+                    processed_keyword = keyword
+            elif self.stemmer:
+                try:
+                    processed_keyword = self.stemmer.stem(keyword)
+                except:
+                    processed_keyword = keyword
+            else:
+                processed_keyword = keyword
+            
+            processed_keywords.add(processed_keyword)
+        
+        return processed_keywords
+    
+    def calculate_keyword_similarity(self, keywords1: Set[str], keywords2: Set[str]) -> float:
+        """Calculate similarity between two sets of keywords using Jaccard similarity"""
+        if not keywords1 and not keywords2:
+            return 1.0
+        
+        if not keywords1 or not keywords2:
             return 0.0
         
-        try:
-            doc1 = nlp(text1)
-            doc2 = nlp(text2)
-            return doc1.similarity(doc2)
-        except:
+        # Jaccard similarity: |intersection| / |union|
+        intersection = keywords1.intersection(keywords2)
+        union = keywords1.union(keywords2)
+        
+        if len(union) == 0:
             return 0.0
-    
-    def calculate_tfidf_similarity(self, texts: List[str], idx1: int, idx2: int) -> float:
-        """Calculate TF-IDF cosine similarity between two texts"""
-        try:
-            vectorizer = TfidfVectorizer()
-            tfidf_matrix = vectorizer.fit_transform(texts)
-            cosine_sim = cosine_similarity(tfidf_matrix[idx1:idx1+1], tfidf_matrix[idx2:idx2+1])
-            return cosine_sim[0][0]
-        except:
-            return 0.0
+        
+        jaccard_similarity = len(intersection) / len(union)
+        
+        # Also consider overlap percentage from each set's perspective
+        overlap1 = len(intersection) / len(keywords1) if keywords1 else 0
+        overlap2 = len(intersection) / len(keywords2) if keywords2 else 0
+        
+        # Take the maximum overlap percentage
+        max_overlap = max(overlap1, overlap2)
+        
+        # Weighted combination: 60% Jaccard + 40% max overlap
+        combined_similarity = (jaccard_similarity * 0.6) + (max_overlap * 0.4)
+        
+        return combined_similarity
     
     def calculate_sequence_similarity(self, text1: str, text2: str) -> float:
         """Calculate sequence similarity using difflib"""
-        return SequenceMatcher(None, text1, text2).ratio()
-    
-    def calculate_jaccard_similarity(self, text1: str, text2: str) -> float:
-        """Calculate Jaccard similarity between two texts"""
-        words1 = set(text1.split())
-        words2 = set(text2.split())
+        norm1 = self.normalize_text(text1)
+        norm2 = self.normalize_text(text2)
         
-        if not words1 and not words2:
+        if not norm1 and not norm2:
             return 1.0
-        if not words1 or not words2:
+        
+        if not norm1 or not norm2:
             return 0.0
-            
-        intersection = words1.intersection(words2)
-        union = words1.union(words2)
-        return len(intersection) / len(union)
+        
+        return SequenceMatcher(None, norm1, norm2).ratio()
     
-    def is_similar(self, text1: str, text2: str, processed_texts: List[str], idx1: int, idx2: int) -> bool:
-        """Determine if two texts are similar using multiple algorithms"""
-        processed1 = self.preprocess_text(text1)
-        processed2 = self.preprocess_text(text2)
+    def extract_financial_terms(self, text: str) -> Set[str]:
+        """Extract financial-specific terms that are important for similarity"""
+        financial_patterns = [
+            r'\b(debt|revenue|profit|loss|margin|cash|asset|liability)\b',
+            r'\b(ebitda|earnings|sales|income|expense)\b',
+            r'\b(increase|decrease|decline|fall|rise|growth)\b',
+            r'\b(provision|write-off|impairment)\b',
+            r'\b(ratio|percentage|basis\s+points?)\b',
+            r'\b\d+(?:\.\d+)?%\b',  # Percentages
+            r'\b\d+(?:,\d{3})*(?:\.\d+)?\s*(?:cr|crore|million|billion|k|m|b)\b'  # Numbers with units
+        ]
         
-        # Calculate different similarity metrics
-        sequence_sim = self.calculate_sequence_similarity(processed1, processed2)
-        jaccard_sim = self.calculate_jaccard_similarity(processed1, processed2)
-        semantic_sim = self.calculate_semantic_similarity(processed1, processed2)
-        tfidf_sim = self.calculate_tfidf_similarity(processed_texts, idx1, idx2)
+        financial_terms = set()
+        text_lower = text.lower()
         
-        # Weighted combination of similarities
-        combined_similarity = (
-            sequence_sim * 0.3 +
-            jaccard_sim * 0.3 +
-            semantic_sim * 0.2 +
-            tfidf_sim * 0.2
-        )
+        for pattern in financial_patterns:
+            matches = re.findall(pattern, text_lower)
+            if isinstance(matches, list):
+                for match in matches:
+                    if isinstance(match, str):
+                        financial_terms.add(match.strip())
+                    elif isinstance(match, tuple):
+                        for item in match:
+                            if item:
+                                financial_terms.add(item.strip())
+        
+        return financial_terms
+    
+    def is_similar(self, flag1: RedFlag, flag2: RedFlag) -> bool:
+        """Determine if two flags are similar using keyword-based approach"""
+        
+        # Extract keywords from both flags
+        keywords1 = self.extract_keywords(flag1.content)
+        keywords2 = self.extract_keywords(flag2.content)
+        
+        # Extract financial terms
+        financial1 = self.extract_financial_terms(flag1.content)
+        financial2 = self.extract_financial_terms(flag2.content)
+        
+        # Combine regular keywords with financial terms
+        all_keywords1 = keywords1.union(financial1)
+        all_keywords2 = keywords2.union(financial2)
+        
+        # Calculate keyword similarity
+        keyword_sim = self.calculate_keyword_similarity(all_keywords1, all_keywords2)
+        
+        # Calculate sequence similarity as a backup
+        sequence_sim = self.calculate_sequence_similarity(flag1.content, flag2.content)
+        
+        # If either similarity is very high, consider them similar
+        if keyword_sim >= self.similarity_threshold or sequence_sim >= 0.8:
+            return True
+        
+        # Additional check for short texts (less than 10 words)
+        words1 = len(flag1.content.split())
+        words2 = len(flag2.content.split())
+        
+        if words1 <= 10 or words2 <= 10:
+            # For short texts, use a higher threshold for sequence similarity
+            return sequence_sim >= 0.7
+        
+        # Weighted combination for longer texts
+        combined_similarity = (keyword_sim * 0.7) + (sequence_sim * 0.3)
         
         return combined_similarity >= self.similarity_threshold
     
     def find_duplicates(self, flags: List[RedFlag]) -> List[List[int]]:
-        """Find groups of duplicate flags"""
+        """Find groups of duplicate flags using keyword-based similarity"""
         if len(flags) <= 1:
             return []
-        
-        # Preprocess all texts for TF-IDF
-        processed_texts = [self.preprocess_text(flag.content) for flag in flags]
         
         duplicate_groups = []
         processed_indices = set()
@@ -267,7 +380,7 @@ class PythonDeduplicator:
                 if j in processed_indices:
                     continue
                     
-                if self.is_similar(flags[i].content, flags[j].content, processed_texts, i, j):
+                if self.is_similar(flags[i], flags[j]):
                     current_group.append(j)
                     processed_indices.add(j)
             
@@ -297,11 +410,19 @@ class PythonDeduplicator:
         unique_indices = set(range(len(flags)))
         
         for group in duplicate_groups:
-            # Keep the first flag from each group, remove others
+            # Keep the first flag from each group (usually the most complete), remove others
             for idx in group[1:]:
                 unique_indices.discard(idx)
         
         unique_flags = [flags[i] for i in sorted(unique_indices)]
+        
+        # Log deduplication details
+        if duplicate_groups:
+            print(f"  Deduplication found {len(duplicate_groups)} duplicate groups:")
+            for i, group in enumerate(duplicate_groups, 1):
+                print(f"    Group {i}: {len(group)} similar flags (keeping index {group[0]})")
+        else:
+            print("  No duplicates found")
         
         return DeduplicationResult(
             original_count=original_count,
@@ -929,18 +1050,26 @@ Provide comprehensive red flag analysis:"""
         print("Running 2nd iteration - Python Deduplication...")
         iter2_start = time.time()
         
-        # Initialize Python deduplicator
-        deduplicator = PythonDeduplicator(similarity_threshold=0.8)
+        # Initialize Python deduplicator with keyword-based approach
+        deduplicator = PythonDeduplicator(similarity_threshold=0.7)
         
         # Perform deduplication
         deduplication_result = deduplicator.deduplicate_flags(flags_iter1)
         
         # Create response text for consistency
-        second_response = f"""Python Deduplication Results:
+        second_response = f"""Python Keyword-Based Deduplication Results:
 Original flags count: {deduplication_result.original_count}
 After deduplication: {deduplication_result.deduplicated_count}
 Similarity threshold: {deduplication_result.similarity_threshold}
 Duplicate groups found: {len(deduplication_result.duplicate_groups)}
+
+Deduplication Method: Keyword extraction + Set operations (Union/Intersection)
+- Text normalization (lowercase, remove special chars)
+- NLTK tokenization and stop word removal  
+- Stemming/Lemmatization for keyword standardization
+- Financial term extraction with regex patterns
+- Jaccard similarity on keyword sets
+- Sequence similarity as backup for short texts
 
 Deduplicated Flags:
 """
@@ -953,6 +1082,11 @@ Deduplicated Flags:
                     second_response += f" (Page {flag.page_number})"
                 second_response += "\n"
             second_response += "\n"
+        
+        if deduplication_result.duplicate_groups:
+            second_response += "Duplicate Groups Removed:\n"
+            for i, group in enumerate(deduplication_result.duplicate_groups, 1):
+                second_response += f"Group {i}: Kept flag {group[0]}, removed flags {group[1:]}\n"
         
         iter2_time = time.time() - iter2_start
         
