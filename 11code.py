@@ -7,28 +7,551 @@ import warnings
 import hashlib
 import logging
 import json
-from typing import Dict, List, Any
+import re
+from typing import Dict, List, Any, Optional, Tuple
 import glob
 from pathlib import Path
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.shared import OxmlElement, qn
-import re
 from openai import AzureOpenAI
 import httpx
- 
+from dataclasses import dataclass
+from datetime import datetime
+
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
- 
+
+@dataclass
+class FinancialMetric:
+    """Structure for financial metrics with proper typing"""
+    value: float
+    currency: str = "Cr"
+    unit: str = ""
+    date: str = ""
+    period: str = ""
+
+@dataclass
+class ExtractedNumber:
+    """Structure for extracted numerical data from text"""
+    value: float
+    unit: str
+    context: str
+    is_percentage: bool = False
+    is_ratio: bool = False
+
+class FinancialDataParser:
+    """Enhanced parser for financial data and numerical extraction"""
+    
+    def __init__(self):
+        self.number_patterns = {
+            'percentage': r'(\d+(?:\.\d+)?)\s*%',
+            'currency_cr': r'(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:Cr|crore|crores)',
+            'currency_generic': r'(?:Rs\.?\s*|₹\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:million|billion|thousand|lakh|crore)?',
+            'days': r'(\d+(?:\.\d+)?)\s*days?',
+            'ratio': r'(\d+(?:\.\d+)?)\s*[x×]\s*',
+            'decimal': r'(\d+\.\d+)',
+            'integer': r'(\d+(?:,\d+)*)'
+        }
+    
+    def parse_previous_year_data(self, data_string: str) -> Dict[str, FinancialMetric]:
+        """Parse previous year data into structured format"""
+        structured_data = {}
+        
+        lines = data_string.strip().split('\n')
+        for line in lines:
+            if not line.strip():
+                continue
+                
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                metric_name = parts[0].strip().lower().replace(' ', '_').replace('previous_reported_', '')
+                date_part = parts[1].strip() if len(parts) > 1 else ""
+                value_part = parts[2].strip() if len(parts) > 2 else ""
+                
+                # Extract numerical value
+                value = self._extract_value_from_string(value_part)
+                
+                # Determine unit
+                unit = ""
+                if "cr" in value_part.lower():
+                    unit = "Cr"
+                elif "days" in value_part.lower():
+                    unit = "days"
+                elif "%" in value_part:
+                    unit = "%"
+                
+                structured_data[metric_name] = FinancialMetric(
+                    value=value,
+                    currency=unit if unit in ["Cr", "%"] else "Cr",
+                    unit=unit,
+                    date=date_part,
+                    period=date_part
+                )
+        
+        return structured_data
+    
+    def _extract_value_from_string(self, text: str) -> float:
+        """Extract numerical value from text string"""
+        # Remove common text and clean
+        text = text.replace(',', '').replace('Cr', '').replace('%', '').replace('days', '')
+        
+        # Try to extract number
+        numbers = re.findall(r'\d+(?:\.\d+)?', text)
+        if numbers:
+            return float(numbers[0])
+        return 0.0
+    
+    def extract_numbers_from_text(self, text: str) -> List[ExtractedNumber]:
+        """Extract all numerical data from text with context"""
+        extracted_numbers = []
+        
+        for pattern_name, pattern in self.number_patterns.items():
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                value_str = match.group(1).replace(',', '')
+                try:
+                    value = float(value_str)
+                    
+                    # Get context (surrounding text)
+                    start = max(0, match.start() - 50)
+                    end = min(len(text), match.end() + 50)
+                    context = text[start:end].strip()
+                    
+                    extracted_num = ExtractedNumber(
+                        value=value,
+                        unit=self._get_unit_from_pattern(pattern_name),
+                        context=context,
+                        is_percentage=(pattern_name == 'percentage'),
+                        is_ratio=(pattern_name == 'ratio')
+                    )
+                    extracted_numbers.append(extracted_num)
+                except ValueError:
+                    continue
+        
+        return extracted_numbers
+    
+    def _get_unit_from_pattern(self, pattern_name: str) -> str:
+        """Get unit based on pattern name"""
+        unit_mapping = {
+            'percentage': '%',
+            'currency_cr': 'Cr',
+            'currency_generic': 'Currency',
+            'days': 'days',
+            'ratio': 'x',
+            'decimal': '',
+            'integer': ''
+        }
+        return unit_mapping.get(pattern_name, '')
+
+class EnhancedFinancialAnalyzer:
+    """Enhanced financial analyzer with quantitative capabilities"""
+    
+    def __init__(self, previous_year_data: Dict[str, FinancialMetric]):
+        self.previous_year_data = previous_year_data
+        self.parser = FinancialDataParser()
+        
+        # Enhanced criteria with computational logic
+        self.criteria_definitions = {
+            "debt_increase": {
+                "description": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30%",
+                "threshold": 30.0,
+                "comparison_type": "percentage_increase",
+                "baseline_key": "debt",
+                "keywords": ["debt", "borrowing", "loan", "liability"]
+            },
+            "provisioning": {
+                "description": "High: provisioning or write-offs more than 25% of current quarter's EBITDA; Low: provisioning or write-offs less than 25%",
+                "threshold": 25.0,
+                "comparison_type": "percentage_of_ebitda",
+                "baseline_key": "current_quarter_ebidta",
+                "keywords": ["provision", "write-off", "bad debt", "impairment"]
+            },
+            "asset_decline": {
+                "description": "High: Asset value falls by >=30% compared to previous reported balance sheet number; Low: Asset value falls by less than 30%",
+                "threshold": 30.0,
+                "comparison_type": "percentage_decrease",
+                "baseline_key": "asset_value",
+                "keywords": ["asset", "assets", "decline", "fall", "decrease"]
+            },
+            "receivable_days": {
+                "description": "High: receivable days increase by >=30% compared to previous reported balance sheet number; Low: receivable days increase is less than 30%",
+                "threshold": 30.0,
+                "comparison_type": "percentage_increase",
+                "baseline_key": "receivable_days",
+                "keywords": ["receivable", "DSO", "collection"]
+            },
+            "payable_days": {
+                "description": "High: payable days increase by >=30% compared to previous reported balance sheet number; Low: payable days increase is less than 30%",
+                "threshold": 30.0,
+                "comparison_type": "percentage_increase",
+                "baseline_key": "payable_days",
+                "keywords": ["payable", "DPO", "payment"]
+            },
+            "debt_ebitda": {
+                "description": "High: Debt/EBITDA >= 3x; Low: Debt/EBITDA < 3x",
+                "threshold": 3.0,
+                "comparison_type": "ratio",
+                "baseline_key": "debt_ebitda_ratio",
+                "keywords": ["debt to ebitda", "leverage", "debt ebitda"]
+            },
+            "revenue_decline": {
+                "description": "High: revenue or profitability falls by >=25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25%",
+                "threshold": 25.0,
+                "comparison_type": "percentage_decrease",
+                "baseline_key": "revenue",
+                "keywords": ["revenue", "sales", "income", "profitability"]
+            },
+            "onetime_expenses": {
+                "description": "High: one-time expenses or losses more than 25% of current quarter's EBITDA; Low: one-time expenses or losses less than 25%",
+                "threshold": 25.0,
+                "comparison_type": "percentage_of_ebitda",
+                "baseline_key": "current_quarter_ebidta",
+                "keywords": ["one-time", "exceptional", "non-recurring", "extraordinary"]
+            },
+            "margin_decline": {
+                "description": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 25%",
+                "threshold": 25.0,
+                "comparison_type": "percentage_decrease",
+                "baseline_key": "operating_margin",
+                "keywords": ["margin", "profitability", "operating margin", "gross margin"]
+            },
+            "cash_balance": {
+                "description": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25%",
+                "threshold": 25.0,
+                "comparison_type": "percentage_decrease",
+                "baseline_key": "cash_balance",
+                "keywords": ["cash", "liquidity", "cash balance"]
+            },
+            "short_term_debt": {
+                "description": "High: Short-term debt or current liabilities increase by >=30% compared to previous reported balance sheet number; Low: Short-term debt or current liabilities increase is less than 30%",
+                "threshold": 30.0,
+                "comparison_type": "percentage_increase",
+                "baseline_key": "current_liabilities",
+                "keywords": ["short-term debt", "current liabilities", "short term"]
+            },
+            "management_issues": {
+                "description": "High: Any management turnover or key personnel departures; Low: No management turnover",
+                "threshold": 0.0,
+                "comparison_type": "qualitative",
+                "baseline_key": "",
+                "keywords": ["management", "CEO", "CFO", "resignation", "turnover", "departure"]
+            },
+            "regulatory_compliance": {
+                "description": "High: if found any regulatory issues as a concern; Low: if there is no clear concern",
+                "threshold": 0.0,
+                "comparison_type": "qualitative",
+                "baseline_key": "",
+                "keywords": ["regulatory", "compliance", "penalty", "violation", "regulator"]
+            },
+            "market_competition": {
+                "description": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity",
+                "threshold": 0.0,
+                "comparison_type": "qualitative",
+                "baseline_key": "",
+                "keywords": ["competition", "market share", "competitor", "competitive"]
+            },
+            "operational_disruptions": {
+                "description": "High: if found any operational or supply chain issues as a concern; Low: if there is no clear concern",
+                "threshold": 0.0,
+                "comparison_type": "qualitative",
+                "baseline_key": "",
+                "keywords": ["operational", "supply chain", "production", "operations"]
+            }
+        }
+    
+    def calculate_percentage_change(self, current_value: float, previous_value: float) -> float:
+        """Calculate percentage change between current and previous values"""
+        if previous_value == 0:
+            return 0.0
+        return ((current_value - previous_value) / previous_value) * 100
+    
+    def classify_flag_enhanced(self, flag: str, llm) -> Dict[str, Any]:
+        """Enhanced classification with numerical analysis"""
+        
+        # Extract numbers from flag
+        extracted_numbers = self.parser.extract_numbers_from_text(flag)
+        
+        # Find best matching criteria
+        best_match = self._find_best_criteria_match(flag)
+        
+        if not best_match:
+            return {
+                'matched_criteria': 'None',
+                'risk_level': 'Low',
+                'reasoning': 'No matching criteria found',
+                'numerical_analysis': {},
+                'confidence': 0.0
+            }
+        
+        criteria_name = best_match['criteria']
+        criteria_info = self.criteria_definitions[criteria_name]
+        
+        # Perform quantitative analysis
+        numerical_analysis = self._perform_quantitative_analysis(
+            flag, extracted_numbers, criteria_info, criteria_name
+        )
+        
+        # Determine risk level based on analysis
+        risk_level = self._determine_risk_level(numerical_analysis, criteria_info)
+        
+        # Generate detailed reasoning
+        reasoning = self._generate_reasoning(numerical_analysis, criteria_info, risk_level)
+        
+        return {
+            'matched_criteria': criteria_name,
+            'risk_level': risk_level,
+            'reasoning': reasoning,
+            'numerical_analysis': numerical_analysis,
+            'confidence': best_match['confidence']
+        }
+    
+    def _find_best_criteria_match(self, flag: str) -> Optional[Dict[str, Any]]:
+        """Find best matching criteria using keyword and semantic analysis"""
+        flag_lower = flag.lower()
+        
+        matches = []
+        for criteria_name, criteria_info in self.criteria_definitions.items():
+            score = 0
+            matched_keywords = []
+            
+            # Keyword matching
+            for keyword in criteria_info['keywords']:
+                if keyword.lower() in flag_lower:
+                    score += 1
+                    matched_keywords.append(keyword)
+            
+            # Bonus for exact phrase matches
+            if any(keyword in flag_lower for keyword in criteria_info['keywords']):
+                score += 0.5
+            
+            if score > 0:
+                matches.append({
+                    'criteria': criteria_name,
+                    'score': score,
+                    'matched_keywords': matched_keywords,
+                    'confidence': min(score / len(criteria_info['keywords']), 1.0)
+                })
+        
+        if matches:
+            # Return best match (highest score)
+            return max(matches, key=lambda x: x['score'])
+        
+        return None
+    
+    def _perform_quantitative_analysis(self, flag: str, extracted_numbers: List[ExtractedNumber], 
+                                     criteria_info: Dict, criteria_name: str) -> Dict[str, Any]:
+        """Perform detailed quantitative analysis"""
+        
+        analysis = {
+            'extracted_numbers': [
+                {
+                    'value': num.value,
+                    'unit': num.unit,
+                    'context': num.context[:100],  # Truncate context
+                    'is_percentage': num.is_percentage,
+                    'is_ratio': num.is_ratio
+                } for num in extracted_numbers
+            ],
+            'baseline_value': None,
+            'calculated_change': None,
+            'threshold_met': False,
+            'calculation_type': criteria_info['comparison_type']
+        }
+        
+        # Get baseline value from previous year data
+        baseline_key = criteria_info.get('baseline_key', '')
+        if baseline_key and baseline_key in self.previous_year_data:
+            analysis['baseline_value'] = self.previous_year_data[baseline_key].value
+        
+        # Perform specific calculations based on comparison type
+        if criteria_info['comparison_type'] in ['percentage_increase', 'percentage_decrease']:
+            analysis.update(self._calculate_percentage_change_analysis(
+                extracted_numbers, analysis['baseline_value'], criteria_info
+            ))
+        elif criteria_info['comparison_type'] == 'ratio':
+            analysis.update(self._calculate_ratio_analysis(
+                extracted_numbers, criteria_info
+            ))
+        elif criteria_info['comparison_type'] == 'percentage_of_ebitda':
+            analysis.update(self._calculate_ebitda_percentage_analysis(
+                extracted_numbers, criteria_info
+            ))
+        elif criteria_info['comparison_type'] == 'qualitative':
+            analysis.update(self._perform_qualitative_analysis(flag, criteria_info))
+        
+        return analysis
+    
+    def _calculate_percentage_change_analysis(self, extracted_numbers: List[ExtractedNumber], 
+                                            baseline_value: Optional[float], 
+                                            criteria_info: Dict) -> Dict[str, Any]:
+        """Calculate percentage change analysis"""
+        result = {
+            'calculated_change': None,
+            'threshold_met': False,
+            'change_type': criteria_info['comparison_type']
+        }
+        
+        if not baseline_value:
+            # Look for percentage directly mentioned in the text
+            percentage_values = [num.value for num in extracted_numbers if num.is_percentage]
+            if percentage_values:
+                max_percentage = max(percentage_values)
+                result['calculated_change'] = max_percentage
+                result['threshold_met'] = max_percentage >= criteria_info['threshold']
+            return result
+        
+        # Look for current values to compare with baseline
+        current_values = [num.value for num in extracted_numbers if not num.is_percentage and not num.is_ratio]
+        
+        if current_values:
+            # Use the most relevant value (could be enhanced with better selection logic)
+            current_value = max(current_values)  # Simple heuristic
+            
+            if criteria_info['comparison_type'] == 'percentage_increase':
+                if current_value > baseline_value:
+                    change = self.calculate_percentage_change(current_value, baseline_value)
+                    result['calculated_change'] = change
+                    result['threshold_met'] = change >= criteria_info['threshold']
+            elif criteria_info['comparison_type'] == 'percentage_decrease':
+                if current_value < baseline_value:
+                    change = abs(self.calculate_percentage_change(current_value, baseline_value))
+                    result['calculated_change'] = change
+                    result['threshold_met'] = change >= criteria_info['threshold']
+        
+        return result
+    
+    def _calculate_ratio_analysis(self, extracted_numbers: List[ExtractedNumber], 
+                                criteria_info: Dict) -> Dict[str, Any]:
+        """Calculate ratio analysis (e.g., debt/EBITDA)"""
+        result = {
+            'calculated_ratio': None,
+            'threshold_met': False
+        }
+        
+        # Look for ratio values or x multipliers
+        ratio_values = [num.value for num in extracted_numbers if num.is_ratio or 'x' in num.unit.lower()]
+        decimal_values = [num.value for num in extracted_numbers if not num.is_percentage and num.value < 10]
+        
+        potential_ratios = ratio_values + decimal_values
+        
+        if potential_ratios:
+            ratio = max(potential_ratios)  # Take the highest ratio found
+            result['calculated_ratio'] = ratio
+            result['threshold_met'] = ratio >= criteria_info['threshold']
+        
+        return result
+    
+    def _calculate_ebitda_percentage_analysis(self, extracted_numbers: List[ExtractedNumber], 
+                                            criteria_info: Dict) -> Dict[str, Any]:
+        """Calculate percentage of EBITDA analysis"""
+        result = {
+            'percentage_of_ebitda': None,
+            'threshold_met': False
+        }
+        
+        baseline_key = criteria_info.get('baseline_key', '')
+        if baseline_key and baseline_key in self.previous_year_data:
+            ebitda_value = self.previous_year_data[baseline_key].value
+            
+            # Look for expense/loss values
+            expense_values = [num.value for num in extracted_numbers if not num.is_percentage]
+            
+            if expense_values and ebitda_value > 0:
+                max_expense = max(expense_values)
+                percentage = (max_expense / ebitda_value) * 100
+                result['percentage_of_ebitda'] = percentage
+                result['threshold_met'] = percentage >= criteria_info['threshold']
+        
+        return result
+    
+    def _perform_qualitative_analysis(self, flag: str, criteria_info: Dict) -> Dict[str, Any]:
+        """Perform qualitative analysis for non-quantitative criteria"""
+        result = {
+            'qualitative_assessment': 'present',
+            'threshold_met': True  # If keywords are found, assume high risk for qualitative criteria
+        }
+        
+        # For qualitative criteria, presence of keywords indicates high risk
+        flag_lower = flag.lower()
+        critical_keywords = {
+            'management_issues': ['resignation', 'departed', 'left', 'stepped down', 'turnover'],
+            'regulatory_compliance': ['penalty', 'violation', 'fine', 'non-compliance', 'breach'],
+            'market_competition': ['lost market share', 'intense competition', 'new competitor'],
+            'operational_disruptions': ['disruption', 'shutdown', 'halt', 'stopped', 'issue']
+        }
+        
+        criteria_name = None
+        for name, info in self.criteria_definitions.items():
+            if info == criteria_info:
+                criteria_name = name
+                break
+        
+        if criteria_name and criteria_name in critical_keywords:
+            has_critical_keywords = any(keyword in flag_lower for keyword in critical_keywords[criteria_name])
+            result['threshold_met'] = has_critical_keywords
+        
+        return result
+    
+    def _determine_risk_level(self, analysis: Dict[str, Any], criteria_info: Dict) -> str:
+        """Determine risk level based on numerical analysis"""
+        
+        if analysis.get('threshold_met', False):
+            return 'High'
+        
+        # Additional logic for edge cases
+        comparison_type = criteria_info['comparison_type']
+        
+        if comparison_type == 'qualitative':
+            # For qualitative criteria, if keywords are present, check context
+            return 'High' if analysis.get('threshold_met', False) else 'Low'
+        
+        # For quantitative criteria, check if we have any concerning numbers
+        extracted_numbers = analysis.get('extracted_numbers', [])
+        if extracted_numbers:
+            # If we found numbers but couldn't calculate properly, be conservative
+            percentages = [num['value'] for num in extracted_numbers if num['is_percentage']]
+            if percentages and max(percentages) > criteria_info['threshold'] * 0.7:  # 70% of threshold
+                return 'High'
+        
+        return 'Low'
+    
+    def _generate_reasoning(self, analysis: Dict[str, Any], criteria_info: Dict, risk_level: str) -> str:
+        """Generate detailed reasoning for the classification"""
+        
+        reasoning_parts = []
+        
+        # Add criteria match info
+        reasoning_parts.append(f"Matched criteria: {criteria_info['description']}")
+        
+        # Add numerical analysis details
+        if analysis.get('calculated_change') is not None:
+            reasoning_parts.append(f"Calculated change: {analysis['calculated_change']:.1f}%")
+        
+        if analysis.get('calculated_ratio') is not None:
+            reasoning_parts.append(f"Calculated ratio: {analysis['calculated_ratio']:.1f}x")
+        
+        if analysis.get('percentage_of_ebitda') is not None:
+            reasoning_parts.append(f"Percentage of EBITDA: {analysis['percentage_of_ebitda']:.1f}%")
+        
+        # Add threshold assessment
+        threshold_met = analysis.get('threshold_met', False)
+        reasoning_parts.append(f"Threshold ({criteria_info['threshold']}) {'met' if threshold_met else 'not met'}")
+        
+        # Add risk level justification
+        reasoning_parts.append(f"Risk Level: {risk_level}")
+        
+        return "; ".join(reasoning_parts)
+
 def getFilehash(file_path: str):
     """Generate SHA3-256 hash of a file"""
     with open(file_path, 'rb') as f:
         return hashlib.sha3_256(f.read()).hexdigest()
- 
+
 class AzureOpenAILLM:
-    """Azure OpenAI gpt-4.1-mini-mini LLM class"""
+    """Azure OpenAI LLM class with enhanced prompting"""
    
     def __init__(self, api_key: str, azure_endpoint: str, api_version: str, deployment_name: str = "gpt-4.1-mini"):
         self.deployment_name = deployment_name
@@ -41,7 +564,7 @@ class AzureOpenAILLM:
         )
    
     def _call(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
-        """Make API call to Azure OpenAI gpt-4.1-mini-mini"""
+        """Make API call to Azure OpenAI"""
         try:
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
@@ -59,7 +582,7 @@ class AzureOpenAILLM:
         except Exception as e:
             logger.error(f"Azure OpenAI API call failed: {str(e)}")
             return f"Azure OpenAI Call Failed: {str(e)}"
- 
+
 class PDFExtractor:
     """Class for extracting text from PDF files"""
    
@@ -82,7 +605,7 @@ class PDFExtractor:
         except Exception as e:
             logger.error(f"PDF extraction error: {e}")
             raise
- 
+
 def mergeDocs(pdf_path: str, split_pages: bool = False) -> List[Dict[str, Any]]:
     """Merge PDF documents into a single context"""
     extractor = PDFExtractor()
@@ -145,385 +668,48 @@ Extract company information:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-# CSV functions removed - using manual string input instead
-
-def parse_previous_year_data(previous_year_data: str) -> dict:
-    """Convert previous year data string into structured JSON for better LLM understanding"""
-    
-    parsed_data = {
-        "previous_metrics": {},
-        "formatted_for_llm": ""
-    }
-    
-    try:
-        lines = previous_year_data.strip().split('\n')
-        
-        for line in lines:
-            if line.strip() and '\t' in line:
-                parts = line.strip().split('\t')
-                if len(parts) >= 3:
-                    metric_name = parts[0].strip()
-                    date = parts[1].strip()
-                    value = parts[2].strip()
-                    
-                    # Extract numeric values and map to metrics
-                    if "debt" in metric_name.lower():
-                        parsed_data["previous_metrics"]["debt"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "ebitda" in metric_name.lower() or "ebidta" in metric_name.lower():
-                        parsed_data["previous_metrics"]["ebitda"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "asset" in metric_name.lower():
-                        parsed_data["previous_metrics"]["assets"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "receivable days" in metric_name.lower():
-                        parsed_data["previous_metrics"]["receivable_days"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Days"
-                        }
-                    elif "payable days" in metric_name.lower():
-                        parsed_data["previous_metrics"]["payable_days"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Days"
-                        }
-                    elif "revenue" in metric_name.lower():
-                        parsed_data["previous_metrics"]["revenue"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "profitability" in metric_name.lower():
-                        parsed_data["previous_metrics"]["profitability"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "margin" in metric_name.lower():
-                        parsed_data["previous_metrics"]["operating_margin"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Percentage"
-                        }
-                    elif "cash" in metric_name.lower():
-                        parsed_data["previous_metrics"]["cash_balance"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-                    elif "liabilities" in metric_name.lower():
-                        parsed_data["previous_metrics"]["current_liabilities"] = {
-                            "value": value,
-                            "numeric": extract_numeric_value(value),
-                            "date": date,
-                            "unit": "Crores"
-                        }
-        
-        # Create formatted string for LLM
-        parsed_data["formatted_for_llm"] = create_llm_formatted_string(parsed_data["previous_metrics"])
-        
-        return parsed_data
-        
-    except Exception as e:
-        print(f"Error parsing previous year data: {e}")
-        return {
-            "previous_metrics": {},
-            "formatted_for_llm": "Error parsing previous year data"
-        }
-
-def extract_numeric_value(value_str: str) -> float:
-    """Extract numeric value from string like '80,329Cr' or '25%'"""
-    try:
-        clean_value = value_str.replace('Cr', '').replace('%', '').replace('days', '').replace(',', '').strip()
-        return float(clean_value)
-    except:
-        return 0.0
-
-def create_llm_formatted_string(metrics: dict) -> str:
-    """Create a well-formatted string for LLM understanding"""
-    
-    formatted = "PREVIOUS YEAR FINANCIAL METRICS:\n\n"
-    
-    # Financial Position Metrics
-    formatted += "BALANCE SHEET METRICS:\n"
-    if "debt" in metrics:
-        formatted += f"• Total Debt: {metrics['debt']['value']} (as of {metrics['debt']['date']})\n"
-    if "assets" in metrics:
-        formatted += f"• Total Assets: {metrics['assets']['value']} (as of {metrics['assets']['date']})\n"
-    if "cash_balance" in metrics:
-        formatted += f"• Cash Balance: {metrics['cash_balance']['value']} (as of {metrics['cash_balance']['date']})\n"
-    if "current_liabilities" in metrics:
-        formatted += f"• Current Liabilities: {metrics['current_liabilities']['value']} (as of {metrics['current_liabilities']['date']})\n"
-    
-    formatted += "\nPERFORMANCE METRICS:\n"
-    if "revenue" in metrics:
-        formatted += f"• Revenue: {metrics['revenue']['value']} (for period ending {metrics['revenue']['date']})\n"
-    if "ebitda" in metrics:
-        formatted += f"• EBITDA: {metrics['ebitda']['value']} (for period ending {metrics['ebitda']['date']})\n"
-    if "profitability" in metrics:
-        formatted += f"• Profitability: {metrics['profitability']['value']} (for period ending {metrics['profitability']['date']})\n"
-    if "operating_margin" in metrics:
-        formatted += f"• Operating Margin: {metrics['operating_margin']['value']} (for period ending {metrics['operating_margin']['date']})\n"
-    
-    formatted += "\nWORKING CAPITAL METRICS:\n"
-    if "receivable_days" in metrics:
-        formatted += f"• Receivable Days: {metrics['receivable_days']['value']} (as of {metrics['receivable_days']['date']})\n"
-    if "payable_days" in metrics:
-        formatted += f"• Payable Days: {metrics['payable_days']['value']} (as of {metrics['payable_days']['date']})\n"
-    
-    formatted += "\nUSE THESE METRICS FOR COMPARISON WITH CURRENT PERIOD DATA TO IDENTIFY RED FLAGS.\n"
-    
-    return formatted
-
-def extract_current_metrics_from_document(context: str, llm: AzureOpenAILLM) -> Dict[str, float]:
-    """Extract current financial metrics from the document"""
-    
-    extraction_prompt = f"""Extract CURRENT PERIOD financial metrics from this document.
-
-REQUIRED METRICS (extract exact numbers only):
-1. Current Total Debt (in Crores)
-2. Current EBITDA (in Crores)
-3. Current Revenue (in Crores) 
-4. Current Operating Margin (as %)
-5. Current Cash Balance (in Crores)
-6. Current Assets (in Crores)
-7. Current Liabilities (in Crores)
-8. Current Receivable Days (in days)
-9. Current Payable Days (in days)
-
-OUTPUT FORMAT (JSON only):
-{{
-    "debt": 85000,
-    "ebitda": 12000,
-    "revenue": 38000,
-    "operating_margin": 22.5,
-    "cash_balance": 8500,
-    "assets": 195000,
-    "current_liabilities": 42000,
-    "receivable_days": 13,
-    "payable_days": 118
-}}
-
-If metric not found, use null.
-
-DOCUMENT TEXT:
-{context[:8000]}
-
-Extract current metrics:"""
-    
-    try:
-        response = llm._call(extraction_prompt, max_tokens=400, temperature=0.0)
-        current_metrics = json.loads(response.strip())
-        return current_metrics
-    except Exception as e:
-        print(f"Error extracting current metrics: {e}")
-        return {}
-
-def validate_quantitative_criteria(current_metrics: Dict, previous_metrics: Dict) -> Dict[str, Dict]:
-    """Perform mathematical validation against quantitative thresholds"""
-    
-    validations = {}
-    
-    try:
-        # Debt Increase Validation
-        if (current_metrics.get('debt') and previous_metrics.get('debt', {}).get('numeric')):
-            current_debt = current_metrics['debt']
-            previous_debt = previous_metrics['debt']['numeric']
-            debt_change = (current_debt - previous_debt) / previous_debt
-            
-            validations['debt_increase'] = {
-                'triggered': debt_change >= 0.30,
-                'severity': 'High' if debt_change >= 0.30 else 'Low',
-                'value': debt_change * 100,
-                'evidence': f"Debt changed from {previous_debt:,.0f}Cr to {current_debt:,.0f}Cr ({debt_change*100:.1f}%)"
-            }
-        
-        # Revenue Decline Validation
-        if (current_metrics.get('revenue') and previous_metrics.get('revenue', {}).get('numeric')):
-            current_revenue = current_metrics['revenue']
-            previous_revenue = previous_metrics['revenue']['numeric']
-            revenue_change = (current_revenue - previous_revenue) / previous_revenue
-            
-            if revenue_change < 0:  # Only if decline
-                validations['revenue_decline'] = {
-                    'triggered': abs(revenue_change) >= 0.25,
-                    'severity': 'High' if abs(revenue_change) >= 0.25 else 'Low',
-                    'value': revenue_change * 100,
-                    'evidence': f"Revenue declined from {previous_revenue:,.0f}Cr to {current_revenue:,.0f}Cr ({revenue_change*100:.1f}%)"
-                }
-        
-        # Operating Margin Decline
-        if (current_metrics.get('operating_margin') and previous_metrics.get('operating_margin', {}).get('numeric')):
-            current_margin = current_metrics['operating_margin']
-            previous_margin = previous_metrics['operating_margin']['numeric']
-            margin_change = (current_margin - previous_margin) / previous_margin
-            
-            if margin_change < 0:  # Only if decline
-                validations['margin_decline'] = {
-                    'triggered': abs(margin_change) >= 0.25,
-                    'severity': 'High' if abs(margin_change) >= 0.25 else 'Low',
-                    'value': margin_change * 100,
-                    'evidence': f"Operating margin declined from {previous_margin}% to {current_margin}% ({margin_change*100:.1f}%)"
-                }
-        
-        # Cash Balance Decline
-        if (current_metrics.get('cash_balance') and previous_metrics.get('cash_balance', {}).get('numeric')):
-            current_cash = current_metrics['cash_balance']
-            previous_cash = previous_metrics['cash_balance']['numeric']
-            cash_change = (current_cash - previous_cash) / previous_cash
-            
-            if cash_change < 0:  # Only if decline
-                validations['cash_balance'] = {
-                    'triggered': abs(cash_change) >= 0.25,
-                    'severity': 'High' if abs(cash_change) >= 0.25 else 'Low',
-                    'value': cash_change * 100,
-                    'evidence': f"Cash balance declined from {previous_cash:,.0f}Cr to {current_cash:,.0f}Cr ({cash_change*100:.1f}%)"
-                }
-        
-        # EBITDA Coverage (for provisions)
-        if current_metrics.get('ebitda'):
-            ebitda_threshold = current_metrics['ebitda'] * 0.25
-            validations['ebitda_coverage'] = {
-                'threshold': ebitda_threshold,
-                'ebitda': current_metrics['ebitda']
-            }
-        
-        return validations
-        
-    except Exception as e:
-        print(f"Error in quantitative validation: {e}")
-        return {}
-
-def detect_qualitative_flags(context: str, llm: AzureOpenAILLM) -> Dict[str, Dict]:
-    """Detect qualitative red flags using advanced keyword and context analysis"""
-    
-    qualitative_prompt = f"""Detect SPECIFIC qualitative red flags in this document.
-
-SCAN FOR THESE QUALITATIVE ISSUES:
-1. Management Issues: Leadership changes, resignations, governance problems
-2. Regulatory Issues: Compliance violations, penalties, regulatory warnings
-3. Operational Disruptions: Supply chain, production, delivery issues  
-4. Market Competition: Competitive pressure, market share loss
-5. Employee Issues: High attrition, manpower problems, strikes
-
-DETECTION RULES:
-- Must be CLEARLY mentioned in the document
-- Must indicate a CONCERN or PROBLEM (not just neutral mentions)
-- Must have SPECIFIC evidence or examples
-
-OUTPUT FORMAT (JSON only):
-{{
-    "management_issues": {{
-        "detected": true/false,
-        "severity": "High/Low",
-        "evidence": ["specific quote 1", "specific quote 2"]
-    }},
-    "regulatory_issues": {{
-        "detected": true/false,
-        "severity": "High/Low", 
-        "evidence": ["specific quote 1"]
-    }},
-    "operational_disruptions": {{
-        "detected": true/false,
-        "severity": "High/Low",
-        "evidence": ["specific quote 1"]
-    }},
-    "market_competition": {{
-        "detected": true/false,
-        "severity": "High/Low",
-        "evidence": ["specific quote 1"]
-    }},
-    "employee_issues": {{
-        "detected": true/false,
-        "severity": "High/Low",
-        "evidence": ["specific quote 1"]
-    }}
-}}
-
-DOCUMENT TEXT:
-{context[:8000]}
-
-Detect qualitative flags:"""
-    
-    try:
-        response = llm._call(qualitative_prompt, max_tokens=600, temperature=0.0)
-        qualitative_flags = json.loads(response.strip())
-        
-        # Filter only detected flags
-        detected_flags = {}
-        for flag_type, details in qualitative_flags.items():
-            if details.get('detected', False):
-                detected_flags[flag_type] = {
-                    'triggered': True,
-                    'severity': details.get('severity', 'High'),
-                    'evidence': details.get('evidence', []),
-                    'validation_type': 'qualitative'
-                }
-        
-        return detected_flags
-        
-    except Exception as e:
-        print(f"Error in qualitative detection: {e}")
-        return {}
-
-def extract_unique_flags_with_enhanced_deduplication(response_text: str, llm: AzureOpenAILLM) -> List[str]:
-    """Enhanced extraction with STRICT deduplication to prevent duplicates"""
+def extract_unique_flags_with_enhanced_extraction(response_text: str, llm: AzureOpenAILLM) -> List[str]:
+    """Enhanced extraction focusing on quantifiable red flags"""
     
     prompt = f"""<role>
-You are an expert financial analyst specializing in red flag extraction and deduplication with 15+ years of experience in financial risk assessment.
+You are an expert financial analyst specializing in extracting quantifiable financial red flags with 15+ years of experience in financial risk assessment.
 </role>
 
 <system_prompt>
-You excel at identifying unique financial concerns, eliminating redundancy, and extracting the most critical risk factors that require management attention and investor awareness.
+You excel at identifying specific, measurable financial concerns that can be quantified and validated against numerical thresholds. You prioritize flags with concrete numbers, percentages, and financial metrics.
 </system_prompt>
 
 <instruction>
-Extract UNIQUE financial red flags from the analysis text with ZERO duplicates or overlapping concerns.
+Extract UNIQUE, QUANTIFIABLE financial red flags from the analysis text with focus on measurable metrics.
 
 EXTRACTION RULES:
-1. Extract all distinct financial red flags mentioned in the text
-2. Each flag must represent a COMPLETELY separate financial concern
-3. Merge similar flags into one comprehensive statement
-4. Remove generic statements without specific value
-5. Prioritize flags with quantitative data over vague statements
-6. Focus on actionable, specific concerns
-7. Use clear, concise business language
-8. Maximum 10 most critical flags
+1. PRIORITIZE flags with specific numbers, percentages, ratios, or quantifiable metrics
+2. Include context that allows for mathematical analysis
+3. Focus on balance sheet, P&L, cash flow, and operational metrics
+4. Preserve exact numerical values mentioned
+5. Each flag should be specific and actionable
+6. Maximum 12 most critical quantifiable flags
+7. Merge similar concepts into comprehensive statements
+8. Include timeframe context when available
 
-DEDUPLICATION ALGORITHM:
-- If 2+ flags address the same underlying issue → MERGE into one comprehensive flag
-- If one flag is a subset of another → REMOVE the subset
-- If flags share >60% similar keywords → CONSOLIDATE
+PREFERRED FLAG TYPES:
+- "Revenue declined by X%" 
+- "Debt increased to X Cr (Y% increase)"
+- "Margin fell from X% to Y%"
+- "Cash balance dropped by X%"
+- "Debt-to-EBITDA ratio increased to Xx"
+- "Receivable days increased from X to Y days"
+
+DEDUPLICATION:
+- Merge overlapping financial metrics
+- Consolidate similar percentage changes
+- Combine related balance sheet items
 
 OUTPUT FORMAT:
-Return ONLY a clean Python list with no additional text or explanations.
-Format: ["flag 1", "flag 2", "flag 3", ...]
+Return ONLY a clean Python list with no additional text.
+Format: ["quantifiable flag 1", "quantifiable flag 2", ...]
 
-QUALITY CRITERIA:
-- Each flag = distinct financial risk
-- No redundancy or overlap between flags
-- Specific and actionable statements
-- Include numbers/percentages when available
-- Professional financial terminology
+FOCUS: Quantifiable, measurable financial red flags with specific numbers and context.
 </instruction>
 
 <context>
@@ -531,167 +717,68 @@ FINANCIAL ANALYSIS TO PROCESS:
 {response_text}
 </context>
 
-Extract unique flags:"""
+Extract quantifiable flags:"""
     
     try:
-        response = llm._call(prompt, max_tokens=600, temperature=0.0)
+        response = llm._call(prompt, max_tokens=800, temperature=0.0)
         
         # Try to parse as Python list
         try:
             unique_flags = ast.literal_eval(response.strip())
-            if isinstance(unique_flags, list) and len(unique_flags) <= 10:
-                flags_list = [flag.strip() for flag in unique_flags if flag.strip()]
-            else:
-                flags_list = unique_flags[:10] if len(unique_flags) > 10 else unique_flags
+            if isinstance(unique_flags, list):
+                flags_list = [flag.strip() for flag in unique_flags if flag.strip() and len(flag.strip()) > 10]
+                return flags_list[:12]  # Limit to 12 flags
         except:
-            # Fallback parsing
+            # Fallback parsing if ast.literal_eval fails
             lines = response.strip().split('\n')
             flags_list = []
             
             for line in lines:
                 line = line.strip()
+                # Look for quoted strings
                 if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
                     flag = line[1:-1].strip()
                     if flag and len(flag) > 10:
                         flags_list.append(flag)
+                # Look for list items
                 elif line.startswith('- ') or line.startswith('* '):
                     flag = line[2:].strip()
                     if flag and len(flag) > 10:
                         flags_list.append(flag)
         
-        # Additional deduplication
+        # Additional deduplication based on numerical content
         final_flags = []
-        seen_keywords = []
+        seen_numerical_patterns = set()
+        
+        parser = FinancialDataParser()
         
         for flag in flags_list:
-            if not flag or len(flag) <= 10:
-                continue
-                
-            normalized = re.sub(r'[^\w\s]', '', flag.lower()).strip()
-            words = set(normalized.split())
+            # Extract numbers from flag
+            extracted_numbers = parser.extract_numbers_from_text(flag)
             
-            is_duplicate = False
-            for existing_keywords in seen_keywords:
-                overlap = len(words.intersection(existing_keywords)) / max(len(words), len(existing_keywords))
-                if overlap > 0.6:
-                    is_duplicate = True
-                    break
+            # Create a signature based on numbers and key financial terms
+            flag_signature = []
+            for num in extracted_numbers:
+                flag_signature.append(f"{num.value}_{num.unit}")
             
-            if not is_duplicate and len(final_flags) < 10:
+            # Add key financial terms
+            financial_terms = ['debt', 'revenue', 'margin', 'cash', 'asset', 'liability', 'receivable', 'payable']
+            for term in financial_terms:
+                if term in flag.lower():
+                    flag_signature.append(term)
+            
+            signature = "_".join(sorted(flag_signature))
+            
+            # Check for uniqueness
+            if signature not in seen_numerical_patterns and len(final_flags) < 12:
                 final_flags.append(flag)
-                seen_keywords.append(words)
+                seen_numerical_patterns.add(signature)
         
-        return final_flags if final_flags else ["No specific red flags identified"]
+        return final_flags if final_flags else ["No specific quantifiable red flags identified"]
         
     except Exception as e:
-        logger.error(f"Error in flag extraction: {e}")
+        logger.error(f"Error in enhanced flag extraction: {e}")
         return ["Error in flag extraction"]
-
-def enhanced_flag_classification(flag: str, previous_year_data: str, context: str, 
-                               criteria_definitions: Dict[str, str], llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification with mathematical validation and qualitative detection"""
-    
-    # Parse previous year data
-    parsed_data = parse_previous_year_data(previous_year_data)
-    
-    # Extract current metrics
-    current_metrics = extract_current_metrics_from_document(context, llm)
-    
-    # Run quantitative validations
-    quant_validations = validate_quantitative_criteria(current_metrics, parsed_data["previous_metrics"])
-    
-    # Run qualitative detections
-    qual_flags = detect_qualitative_flags(context, llm)
-    
-    # Check if flag matches any validated quantitative criteria
-    flag_lower = flag.lower()
-    
-    # Check quantitative matches first (most reliable)
-    for criteria, validation in quant_validations.items():
-        if validation.get('triggered', False):
-            criteria_keywords = {
-                'debt_increase': ['debt', 'borrowing', 'leverage'],
-                'revenue_decline': ['revenue', 'sales', 'income', 'top line'],
-                'margin_decline': ['margin', 'profitability', 'profit'],
-                'cash_balance': ['cash', 'liquidity', 'working capital']
-            }
-            
-            keywords = criteria_keywords.get(criteria, [])
-            if any(keyword in flag_lower for keyword in keywords):
-                return {
-                    'matched_criteria': criteria,
-                    'risk_level': validation['severity'],
-                    'reasoning': validation['evidence'],
-                    'validation_type': 'quantitative_validated'
-                }
-    
-    # Check qualitative matches
-    for criteria, detection in qual_flags.items():
-        if detection.get('triggered', False):
-            criteria_keywords = {
-                'management_issues': ['management', 'leadership', 'ceo', 'cfo', 'resignation'],
-                'regulatory_issues': ['regulatory', 'compliance', 'penalty', 'violation'],
-                'operational_disruptions': ['operational', 'supply chain', 'production'],
-                'market_competition': ['competition', 'market share', 'competitor'],
-                'employee_issues': ['employee', 'attrition', 'manpower', 'workforce']
-            }
-            
-            keywords = criteria_keywords.get(criteria, [])
-            if any(keyword in flag_lower for keyword in keywords):
-                return {
-                    'matched_criteria': criteria,
-                    'risk_level': detection['severity'],
-                    'reasoning': f"Qualitative evidence: {', '.join(detection['evidence'][:2])}",
-                    'validation_type': 'qualitative_validated'
-                }
-    
-    # Fallback to LLM classification for unmatched flags
-    classification_prompt = f"""
-Classify this red flag against criteria using structured previous year data.
-
-RED FLAG: "{flag}"
-
-CRITERIA DEFINITIONS:
-{chr(10).join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])}
-
-STRUCTURED PREVIOUS YEAR DATA:
-{parsed_data["formatted_for_llm"]}
-
-RULES:
-1. Match flag to most relevant criteria
-2. Use High/Low thresholds from criteria definitions
-3. Provide specific reasoning
-
-OUTPUT FORMAT:
-Matched_Criteria: [criteria name or "None"]
-Risk_Level: [High or Low]
-Reasoning: [brief explanation]
-"""
-    
-    try:
-        response = llm._call(classification_prompt, max_tokens=300, temperature=0.0)
-        
-        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No clear match found'}
-        
-        lines = response.strip().split('\n')
-        for line in lines:
-            if 'Matched_Criteria:' in line:
-                result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Risk_Level:' in line:
-                result['risk_level'] = line.split(':', 1)[1].strip()
-            elif 'Reasoning:' in line:
-                result['reasoning'] = line.split(':', 1)[1].strip()
-        
-        result['validation_type'] = 'llm_fallback'
-        return result
-        
-    except Exception as e:
-        return {
-            'matched_criteria': 'None', 
-            'risk_level': 'Low', 
-            'reasoning': f'Error: {str(e)}',
-            'validation_type': 'error'
-        }
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -720,57 +807,52 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
    
     return categories_summary
 
-def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, llm: AzureOpenAILLM) -> List[str]:
-    """Generate VERY concise 1-2 line summaries for high risk flags using original PDF context"""
+def generate_enhanced_high_risk_summary(high_risk_flags: List[str], context: str, 
+                                       numerical_analyses: List[Dict], llm: AzureOpenAILLM) -> List[str]:
+    """Generate enhanced summaries with numerical validation"""
     if not high_risk_flags:
         return []
     
-    # Deduplicate high_risk_flags
-    unique_high_risk_flags = []
-    seen_flag_keywords = []
-    
-    for flag in high_risk_flags:
-        normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
-        flag_words = set(normalized_flag.split())
-        
-        is_duplicate_flag = False
-        for existing_keywords in seen_flag_keywords:
-            overlap = len(flag_words.intersection(existing_keywords)) / max(len(flag_words), len(existing_keywords))
-            if overlap > 0.7:
-                is_duplicate_flag = True
-                break
-        
-        if not is_duplicate_flag:
-            unique_high_risk_flags.append(flag)
-            seen_flag_keywords.append(flag_words)
-    
     concise_summaries = []
-    seen_summary_keywords = []
     
-    for flag in unique_high_risk_flags:
+    for i, flag in enumerate(high_risk_flags):
+        # Get corresponding numerical analysis if available
+        numerical_context = ""
+        if i < len(numerical_analyses) and numerical_analyses[i].get('numerical_analysis'):
+            analysis = numerical_analyses[i]['numerical_analysis']
+            
+            if analysis.get('calculated_change'):
+                numerical_context += f"Calculated change: {analysis['calculated_change']:.1f}%. "
+            if analysis.get('calculated_ratio'):
+                numerical_context += f"Ratio: {analysis['calculated_ratio']:.1f}x. "
+            if analysis.get('baseline_value'):
+                numerical_context += f"Previous baseline: {analysis['baseline_value']}. "
+        
         prompt = f"""
-Based on the original PDF context, create a VERY concise 1-2 line summary for this high risk flag.
+Based on the original PDF context and numerical analysis, create a PRECISE 1-2 line summary for this high risk flag.
 
 ORIGINAL PDF CONTEXT:
-{context[:5000]}
+{context[:3000]}  # Limit context size
 
 HIGH RISK FLAG: "{flag}"
 
+NUMERICAL ANALYSIS: {numerical_context}
+
 STRICT REQUIREMENTS:
 1. EXACTLY 1-2 lines (maximum 2 sentences)
-2. Use ONLY specific information from the PDF context
-3. Include exact numbers/percentages if mentioned
-4. Be factual and direct - no speculation
+2. Include specific numbers/percentages from the PDF or analysis
+3. Be factual and precise - no speculation
+4. Highlight the quantitative concern
 5. Do NOT exceed 2 lines under any circumstances
-6. Do NOT start with "Summary:" or any prefix
-7. Provide ONLY the factual summary content
+6. Provide ONLY the factual summary content (no prefixes)
 
-OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
+OUTPUT FORMAT: [Direct factual summary with numbers, no labels]
 """
         
         try:
-            response = llm._call(prompt, max_tokens=100, temperature=0.1)
+            response = llm._call(prompt, max_tokens=120, temperature=0.1)
             
+            # Clean response
             clean_response = response.strip()
             
             # Remove common prefixes
@@ -779,45 +861,32 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
                 if clean_response.startswith(prefix):
                     clean_response = clean_response[len(prefix):].strip()
             
-            # Split into lines and take first 2
+            # Ensure proper formatting
             summary_lines = [line.strip() for line in clean_response.split('\n') if line.strip()]
             
             if len(summary_lines) > 2:
                 concise_summary = '. '.join(summary_lines[:2])
             elif len(summary_lines) == 0:
-                concise_summary = f"{flag}. Requires management attention."
+                concise_summary = f"{flag} - Quantitative threshold exceeded."
             else:
                 concise_summary = '. '.join(summary_lines)
             
             if not concise_summary.endswith('.'):
                 concise_summary += '.'
             
-            # Check for duplicate content
-            normalized_summary = re.sub(r'[^\w\s]', '', concise_summary.lower()).strip()
-            summary_words = set(normalized_summary.split())
-            
-            is_duplicate_summary = False
-            for existing_keywords in seen_summary_keywords:
-                overlap = len(summary_words.intersection(existing_keywords)) / max(len(summary_words), len(existing_keywords))
-                if overlap > 0.8:
-                    is_duplicate_summary = True
-                    break
-            
-            if not is_duplicate_summary:
-                concise_summaries.append(concise_summary)
-                seen_summary_keywords.append(summary_words)
+            concise_summaries.append(concise_summary)
             
         except Exception as e:
-            logger.error(f"Error generating summary for flag '{flag}': {e}")
-            if len(concise_summaries) < len(unique_high_risk_flags):
-                concise_summaries.append(f"{flag}. Review required based on analysis.")
+            logger.error(f"Error generating enhanced summary for flag '{flag}': {e}")
+            concise_summaries.append(f"{flag} - Requires attention based on quantitative analysis.")
     
     return concise_summaries
 
-def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
-                        high_risk_flags: List[str], summary_by_categories: Dict[str, List[str]], 
-                        output_folder: str, context: str, llm: AzureOpenAILLM) -> str:
-    """Create a formatted Word document with concise high risk summaries"""
+def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
+                                high_risk_flags: List[str], summary_by_categories: Dict[str, List[str]], 
+                                output_folder: str, context: str, llm: AzureOpenAILLM,
+                                numerical_analyses: List[Dict] = None) -> str:
+    """Create enhanced Word document with numerical analysis details"""
    
     try:
         doc = Document()
@@ -826,91 +895,82 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
         title = doc.add_heading(company_info, 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
        
-        # Flag Distribution section
-        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+        # Flag Distribution section with enhanced details
+        flag_dist_heading = doc.add_heading('Quantitative Analysis Summary:', level=2)
         flag_dist_heading.runs[0].bold = True
        
-        # Create flag distribution table
-        table = doc.add_table(rows=3, cols=2)
+        # Create enhanced flag distribution table
+        table = doc.add_table(rows=4, cols=2)
         table.style = 'Table Grid'
        
         high_count = risk_counts.get('High', 0)
         low_count = risk_counts.get('Low', 0)
         total_count = high_count + low_count
        
-        if len(table.rows) >= 3 and len(table.columns) >= 2:
-            table.cell(0, 0).text = 'High Risk'
-            table.cell(0, 1).text = str(high_count)
-            table.cell(1, 0).text = 'Low Risk'
-            table.cell(1, 1).text = str(low_count)
-            table.cell(2, 0).text = 'Total Flags'
-            table.cell(2, 1).text = str(total_count)
+        # Set table content
+        table.cell(0, 0).text = 'High Risk Flags'
+        table.cell(0, 1).text = str(high_count)
+        table.cell(1, 0).text = 'Low Risk Flags'
+        table.cell(1, 1).text = str(low_count)
+        table.cell(2, 0).text = 'Total Flags Analyzed'
+        table.cell(2, 1).text = str(total_count)
+        table.cell(3, 0).text = 'Risk Ratio'
+        table.cell(3, 1).text = f"{(high_count/total_count*100):.1f}%" if total_count > 0 else "0%"
            
-            for i in range(3):
-                if len(table.cell(i, 0).paragraphs) > 0 and len(table.cell(i, 0).paragraphs[0].runs) > 0:
-                    table.cell(i, 0).paragraphs[0].runs[0].bold = True
+        # Make headers bold
+        for i in range(4):
+            table.cell(i, 0).paragraphs[0].runs[0].bold = True
        
         doc.add_paragraph('')
        
-        # High Risk Flags section
+        # High Risk Flags section with numerical details
         if high_risk_flags and len(high_risk_flags) > 0:
-            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
-            if len(high_risk_heading.runs) > 0:
-                high_risk_heading.runs[0].bold = True
+            high_risk_heading = doc.add_heading('High Risk Flags - Quantitative Analysis:', level=2)
+            high_risk_heading.runs[0].bold = True
            
-            concise_summaries = generate_strict_high_risk_summary(high_risk_flags, context, llm)
+            # Generate enhanced summaries with numerical context
+            enhanced_summaries = generate_enhanced_high_risk_summary(
+                high_risk_flags, context, numerical_analyses or [], llm
+            )
             
-            # Final deduplication
-            final_unique_summaries = []
-            seen_content = set()
-            
-            for summary in concise_summaries:
-                if not summary or not summary.strip():
-                    continue
-                    
-                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
-                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
-                
-                is_unique = True
-                for seen in seen_content:
-                    words1 = set(normalized2.split())
-                    words2 = set(seen.split())
-                    if len(words1) == 0 or len(words2) == 0:
-                        continue
-                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
-                    if similarity > 0.6:
-                        is_unique = False
-                        break
-                
-                if is_unique:
-                    final_unique_summaries.append(summary)
-                    seen_content.add(normalized2)
-            
-            for summary in final_unique_summaries:
+            for i, summary in enumerate(enhanced_summaries):
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
                 p.add_run(summary)
+                
+                # Add numerical analysis details if available
+                if numerical_analyses and i < len(numerical_analyses):
+                    analysis = numerical_analyses[i].get('numerical_analysis', {})
+                    if analysis.get('calculated_change') or analysis.get('calculated_ratio'):
+                        detail_p = doc.add_paragraph()
+                        detail_text = "  Analysis: "
+                        
+                        if analysis.get('calculated_change'):
+                            detail_text += f"Change: {analysis['calculated_change']:.1f}%; "
+                        if analysis.get('calculated_ratio'):
+                            detail_text += f"Ratio: {analysis['calculated_ratio']:.1f}x; "
+                        if analysis.get('threshold_met'):
+                            detail_text += "Threshold exceeded"
+                        
+                        detail_p.add_run(detail_text).italic = True
         else:
-            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
-            if len(high_risk_heading.runs) > 0:
-                high_risk_heading.runs[0].bold = True
-            doc.add_paragraph('No high risk flags identified.')
+            high_risk_heading = doc.add_heading('High Risk Flags:', level=2)
+            high_risk_heading.runs[0].bold = True
+            doc.add_paragraph('No high risk flags identified based on quantitative analysis.')
        
         # Horizontal line
-        doc.add_paragraph('_' * 50)
+        doc.add_paragraph('_' * 60)
        
         # Summary section
-        summary_heading = doc.add_heading('Summary', level=1)
-        if len(summary_heading.runs) > 0:
-            summary_heading.runs[0].bold = True
+        summary_heading = doc.add_heading('Detailed Summary by Categories', level=1)
+        summary_heading.runs[0].bold = True
        
         # Add categorized summary
-        if summary_by_categories and len(summary_by_categories) > 0:
+        if summary_by_categories:
             for category, bullets in summary_by_categories.items():
-                if bullets and len(bullets) > 0:
+                if bullets:
                     cat_heading = doc.add_heading(str(category), level=2)
-                    if len(cat_heading.runs) > 0:
-                        cat_heading.runs[0].bold = True
+                    cat_heading.runs[0].bold = True
                    
                     for bullet in bullets:
                         p = doc.add_paragraph()
@@ -922,43 +982,29 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             doc.add_paragraph('No categorized summary available.')
        
         # Save document
-        doc_filename = f"{pdf_name}_Report.docx"
+        doc_filename = f"{pdf_name}_Enhanced_Quantitative_Report.docx"
         doc_path = os.path.join(output_folder, doc_filename)
         doc.save(doc_path)
        
         return doc_path
         
     except Exception as e:
-        logger.error(f"Error creating Word document: {e}")
-        # Create minimal document as fallback
-        try:
-            doc = Document()
-            doc.add_heading(f"{pdf_name} - Analysis Report", 0)
-            doc.add_paragraph(f"High Risk Flags: {risk_counts.get('High', 0)}")
-            doc.add_paragraph(f"Low Risk Flags: {risk_counts.get('Low', 0)}")
-            doc.add_paragraph(f"Total Flags: {risk_counts.get('Total', 0)}")
-            
-            doc_filename = f"{pdf_name}_Report_Fallback.docx"
-            doc_path = os.path.join(output_folder, doc_filename)
-            doc.save(doc_path)
-            return doc_path
-        except Exception as e2:
-            logger.error(f"Error creating fallback document: {e2}")
-            return None
+        logger.error(f"Error creating enhanced Word document: {e}")
+        return None
 
-def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
-                               output_folder: str = "results", 
-                               api_key: str = None, azure_endpoint: str = None, 
-                               api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
+def process_pdf_enhanced_quantitative_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data_str: str, 
+                                             output_folder: str = "results", 
+                                             api_key: str = None, azure_endpoint: str = None, 
+                                             api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process PDF through enhanced 5-iteration pipeline with CSV integration and improved accuracy
+    Enhanced PDF processing pipeline with quantitative analysis
     """
    
     os.makedirs(output_folder, exist_ok=True)
     pdf_name = Path(pdf_path).stem
    
     try:
-        # Initialize LLM and load PDF
+        # Initialize components
         llm = AzureOpenAILLM(
             api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
             azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"), 
@@ -966,51 +1012,70 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
             deployment_name=deployment_name
         )
         
+        # Parse previous year data into structured format
+        parser = FinancialDataParser()
+        structured_previous_data = parser.parse_previous_year_data(previous_year_data_str)
+        
+        print(f"Parsed Previous Year Data: {len(structured_previous_data)} metrics")
+        for key, metric in structured_previous_data.items():
+            print(f"  {key}: {metric.value} {metric.unit}")
+        
+        # Initialize enhanced analyzer
+        analyzer = EnhancedFinancialAnalyzer(structured_previous_data)
+        
+        # Load PDF context
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
         
-        # Load first query from CSV/Excel
+        # Load first query
         try:
             if queries_csv_path.endswith('.xlsx'):
                 queries_df = pd.read_excel(queries_csv_path)
             else:
                 queries_df = pd.read_csv(queries_csv_path)
             
-            if len(queries_df) == 0 or "prompt" not in queries_df.columns:
-                first_query = "Analyze this document for potential red flags."
-            else:
-                first_query = queries_df["prompt"].tolist()[0]
+            first_query = queries_df["prompt"].tolist()[0] if len(queries_df) > 0 and "prompt" in queries_df.columns else "Analyze this document for potential red flags."
         except Exception as e:
             logger.warning(f"Error loading queries file: {e}. Using default query.")
             first_query = "Analyze this document for potential red flags."
         
-        # ITERATION 1: Initial red flag identification
-        print("Running 1st iteration - Initial Analysis...")
+        # ITERATION 1: Enhanced Initial Analysis with numerical focus
+        print("Running 1st iteration - Enhanced Numerical Analysis...")
         first_prompt = f"""<role>
-You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
+You are an expert financial analyst with 15+ years of experience specializing in quantitative analysis of earnings calls and financial documents.
 </role>
 
 <system_prompt>
-You excel at comprehensive document analysis, identifying subtle financial risks, and providing detailed evidence-based assessments with precise documentation.
+You excel at identifying specific, measurable financial concerns with precise numerical data extraction and evidence-based risk assessment.
 </system_prompt>
 
 <instruction>
-Analyze the ENTIRE document and identify ALL potential red flags comprehensively.
+Analyze the ENTIRE document and identify ALL potential red flags with FOCUS ON QUANTIFIABLE METRICS.
 
 ANALYSIS REQUIREMENTS:
-- Review every section of the document thoroughly
-- Identify financial, operational, strategic, and management risks
-- Focus on quantitative concerns with specific data points
-- Document exact quotes with speaker attribution
-- Number each red flag sequentially (1, 2, 3, etc.)
-- Include page references where available
+- Extract specific numbers, percentages, ratios, and financial metrics
+- Identify year-over-year changes, quarter-over-quarter comparisons
+- Focus on balance sheet changes, P&L variations, cash flow concerns
+- Document exact numerical values with context
+- Include speaker attribution and page references
+- Number each red flag sequentially
+
+PRIORITY AREAS FOR NUMERICAL ANALYSIS:
+1. Revenue/Sales changes (% increases/decreases)
+2. Margin changes (basis points, percentage changes)
+3. Debt levels and ratios (debt-to-EBITDA, leverage ratios)
+4. Asset values and impairments (absolute and % changes)
+5. Cash flow metrics and liquidity ratios
+6. Working capital changes (receivable/payable days)
+7. One-time expenses and provisions (% of EBITDA)
 
 OUTPUT FORMAT:
 For each red flag:
-1. The potential red flag you observed - [brief description]
+1. [Brief description with specific numbers] - [detailed numerical context]
 Original Quote: "[exact quote with speaker name]" (Page X)
+Key Metrics: [specific numbers, percentages, ratios mentioned]
 
-CRITICAL: Ensure comprehensive analysis of the entire document.
+CRITICAL: Focus on flags that contain specific numerical data that can be quantitatively analyzed.
 </instruction>
 
 <context>
@@ -1018,235 +1083,224 @@ COMPLETE DOCUMENT TO ANALYZE:
 {context}
 
 SPECIFIC QUESTION: {first_query}
+
+PREVIOUS YEAR BASELINE DATA FOR COMPARISON:
+{previous_year_data_str}
 </context>
 
-Provide comprehensive red flag analysis:"""
+Provide comprehensive numerical red flag analysis:"""
         
         first_response = llm._call(first_prompt, max_tokens=4000)
         
-        # ITERATION 2: Deduplication
-        print("Running 2nd iteration - Deduplication...")
-        second_prompt = "Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. Do not lose data if duplicates are not found."
-        
-        second_full_prompt = f"""You must answer the question strictly based on the below given context.
- 
-Context:
-{context}
- 
-Previous Analysis: {first_response}
- 
-Based on the above analysis and the original context, please answer: {second_prompt}
- 
-Answer:"""
-        
-        second_response = llm._call(second_full_prompt, max_tokens=4000)
-        
-        # ITERATION 3: Categorization
-        print("Running 3rd iteration - Categorization...")
-        third_prompt = f"""<role>
-You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
+        # ITERATION 2: Enhanced Deduplication
+        print("Running 2nd iteration - Enhanced Deduplication...")
+        second_prompt = f"""<role>
+You are an expert financial data analyst specializing in removing duplicate financial concerns while preserving all unique quantitative insights.
 </role>
 
-<system_prompt>
-You excel at organizing financial risks into standardized categories, ensuring comprehensive coverage of all financial risk areas, and maintaining accuracy in risk classification.
-</system_prompt>
-
 <instruction>
-Categorize the identified red flags into the following 7 standardized categories based on their financial nature and business impact.
+Remove duplicates from the financial analysis while preserving all unique numerical insights and quantitative data.
 
-MANDATORY CATEGORIES:
-1. Balance Sheet Issues: Assets, liabilities, equity, debt, and overall financial position concerns
-2. P&L (Income Statement) Issues: Revenue, expenses, profits, and financial performance concerns  
-3. Liquidity Issues: Short-term obligations, cash flow, debt repayment, working capital concerns
-4. Management and Strategy Issues: Leadership, governance, decision-making, strategy, and vision concerns
-5. Regulatory Issues: Compliance, laws, regulations, and regulatory body concerns
-6. Industry and Market Issues: Market position, industry trends, competitive landscape concerns
-7. Operational Issues: Internal processes, systems, infrastructure, and operational efficiency concerns
+DEDUPLICATION RULES:
+1. Merge flags discussing the same financial metric with different wording
+2. Consolidate similar percentage changes or ratios into single comprehensive statements
+3. Preserve ALL unique numerical values and specific metrics
+4. Keep distinct time periods separate (Q1 vs Q2, YoY vs QoQ)
+5. Maintain exact quotes and numerical context
+6. Do not lose any quantitative data during deduplication
 
-CATEGORIZATION RULES:
-- Assign each red flag to the MOST relevant category only
-- Do not create new categories - use only the 7 listed above
-- Preserve all Original Quotes exactly as provided
-- If a red flag could fit multiple categories, choose the primary/most relevant one
-- Do not leave any red flag unclassified
-- Do not repeat categories in the output
-- Maintain sequential organization within each category
+CONSOLIDATION EXAMPLES:
+- "Revenue declined 15%" + "Sales dropped significantly" → "Revenue declined 15% compared to previous period"
+- "Debt increased" + "Borrowing rose by 2000 Cr" → "Debt increased by 2000 Cr"
 
-OUTPUT FORMAT:
-### Balance Sheet Issues
-- [Red flag 1 with original quote and page reference]
-- [Red flag 2 with original quote and page reference]
-
-### P&L (Income Statement) Issues
-- [Red flag 1 with original quote and page reference]
-
-Continue this format for all applicable categories.
+OUTPUT: Deduplicated analysis preserving all unique quantitative insights.
 </instruction>
 
 <context>
-ORIGINAL DOCUMENT:
-{context}
-
-DEDUPLICATED ANALYSIS TO CATEGORIZE:
-{second_response}
+ORIGINAL DOCUMENT: {context[:2000]}
+PREVIOUS ANALYSIS: {first_response}
 </context>
 
-Provide categorized analysis:"""
+Provide deduplicated quantitative analysis:"""
+        
+        second_response = llm._call(second_prompt, max_tokens=4000)
+        
+        # ITERATION 3: Enhanced Categorization
+        print("Running 3rd iteration - Enhanced Categorization...")
+        third_prompt = f"""<role>
+You are a senior financial analyst expert in categorizing quantitative financial risks with deep knowledge of financial statement analysis.
+</role>
+
+<instruction>
+Categorize the quantitative red flags into standardized financial categories while preserving all numerical details.
+
+MANDATORY CATEGORIES:
+1. Balance Sheet Issues: Assets, liabilities, equity, debt levels and ratios
+2. P&L (Income Statement) Issues: Revenue, expenses, margins, profitability metrics  
+3. Liquidity Issues: Cash flow, working capital, short-term obligations, liquidity ratios
+4. Management and Strategy Issues: Leadership changes, strategic decisions, governance
+5. Regulatory Issues: Compliance costs, penalties, regulatory changes
+6. Industry and Market Issues: Market share, competitive position, industry trends
+7. Operational Issues: Production, supply chain, operational efficiency metrics
+
+CATEGORIZATION RULES:
+- Preserve ALL numerical data (percentages, amounts, ratios, changes)
+- Maintain original quotes with exact numerical context
+- Group related quantitative metrics together
+- Include baseline comparisons where available
+- Specify time periods and comparison bases
+
+OUTPUT FORMAT:
+### Balance Sheet Issues
+- [Red flag with specific numbers and % changes] - Original Quote: "..." (Page X)
+  Metrics: Previous: X, Current: Y, Change: Z%
+
+Continue for all applicable categories with numerical preservation.
+</instruction>
+
+<context>
+ORIGINAL DOCUMENT: {context[:2000]}
+DEDUPLICATED ANALYSIS: {second_response}
+PREVIOUS YEAR DATA: {previous_year_data_str}
+</context>
+
+Provide categorized quantitative analysis:"""
         
         third_response = llm._call(third_prompt, max_tokens=4000)
         
-        # ITERATION 4: Summary generation
-        print("Running 4th iteration - Summary Generation...")
+        # ITERATION 4: Enhanced Summary Generation
+        print("Running 4th iteration - Quantitative Summary Generation...")
         fourth_prompt = f"""<role>
-You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
+You are an expert financial summarization specialist focusing on creating quantitative summaries that preserve critical numerical insights.
 </role>
 
-<system_prompt>
-You excel at distilling complex financial analysis into clear, actionable summaries while maintaining objectivity, preserving all quantitative details, and ensuring no critical information is lost.
-</system_prompt>
-
 <instruction>
-Create a comprehensive summary of each category of red flags in bullet point format following these strict guidelines.
+Create comprehensive quantitative summaries for each category, preserving all numerical data and enabling mathematical analysis.
 
 SUMMARY REQUIREMENTS:
-1. Retain ALL quantitative information (numbers, percentages, ratios, dates)
-2. Maintain completely neutral, factual tone - no opinions or interpretations
-3. Include every red flag from each category - no omissions
-4. Base content solely on the provided categorized analysis
-5. Preserve specific data points and statistics wherever mentioned
-6. Each bullet point should capture key details of individual red flags
-7. Balance thoroughness with conciseness
-8. Use professional financial terminology
-9. Ensure category-specific content alignment
+1. Retain ALL quantitative information (exact numbers, percentages, ratios, dates)
+2. Include baseline comparisons where available
+3. Specify calculation methodologies for derived metrics
+4. Maintain neutral, factual tone with precise numerical accuracy
+5. Include time period context for all metrics
+6. Preserve specific quotes for numerical claims
+7. Enable subsequent quantitative analysis and threshold comparisons
+
+NUMERICAL PRESERVATION:
+- Exact amounts: "2,000 Cr increase in debt"
+- Percentage changes: "Revenue declined 15.3% YoY"
+- Ratios: "Debt-to-EBITDA increased to 4.2x from 3.1x"
+- Margins: "Operating margin compressed 250 basis points"
+- Time series: "Q1 vs Q4 comparison shows..."
 
 OUTPUT FORMAT:
 ### Balance Sheet Issues
-* [Summary of red flag 1 with specific data points and factual information]
-* [Summary of red flag 2 with specific data points and factual information]
+* [Quantitative summary with exact numbers and comparison data]
+* [Specific metric change with baseline and current values]
 
-### P&L (Income Statement) Issues  
-* [Summary of red flag 1 with specific data points and factual information]
-
-Continue this format for all 7 categories that contain red flags.
-
-CRITICAL: Each bullet point represents a concise summary of individual red flags with preserved quantitative details.
+Continue for all categories with numerical precision.
 </instruction>
 
 <context>
-ORIGINAL DOCUMENT:
-{context}
-
-CATEGORIZED ANALYSIS TO SUMMARIZE:
-{third_response}
+ORIGINAL DOCUMENT: {context[:2000]}
+CATEGORIZED ANALYSIS: {third_response}
+PREVIOUS YEAR BASELINE: {previous_year_data_str}
 </context>
 
-Provide factual category summaries:"""
+Provide quantitative category summaries:"""
         
         fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
-        # ITERATION 5: Enhanced flag extraction and classification
-        print("Running 5th iteration - Enhanced Classification with Validation...")
+        # ITERATION 5: Enhanced Flag Extraction and Quantitative Classification
+        print("Running 5th iteration - Enhanced Quantitative Classification...")
         
-        # Extract unique flags
-        try:
-            unique_flags = extract_unique_flags_with_enhanced_deduplication(second_response, llm)
-            print(f"\nUnique flags extracted: {len(unique_flags)}")
-        except Exception as e:
-            logger.error(f"Error extracting flags: {e}")
-            unique_flags = ["Error in flag extraction"]
+        # Extract unique quantifiable flags
+        unique_flags = extract_unique_flags_with_enhanced_extraction(second_response, llm)
+        print(f"\nUnique quantifiable flags extracted: {len(unique_flags)}")
         
-        # Define 15 criteria definitions
-        criteria_definitions = {
-            "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
-            "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
-            "asset_decline": "High: Asset value falls by >=30% compared to previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
-            "receivable_days": "High: receivable days increase by >=30% compared to previous reported balance sheet number; Low: receivable days increase is less than 30% compared to previous reported balance sheet number",
-            "payable_days": "High: payable days increase by >=30% compared to previous reported balance sheet number; Low: payable days increase is less than 30% compared to previous reported balance sheet number",
-            "debt_ebitda": "High: Debt/EBITDA >= 3x; Low: Debt/EBITDA < 3x",
-            "revenue_decline": "High: revenue or profitability falls by >=25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
-            "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 25% of current quarter's EBIDTA",
-            "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 25% compared to previous reported quarter number",
-            "cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number",
-            "short_term_debt": "High: Short-term debt or current liabilities increase by >=30% compared to previous reported balance sheet number; Low: Short-term debt or current liabilities increase is less than 30% compared to previous reported balance sheet number",
-            "management_issues": "High: Any management turnover or key personnel departures, Poor track record of execution or delivery, High employee attrition rates; Low: No management turnover or key personnel departures, Strong track record of execution or delivery, Low employee attrition rates",
-            "regulatory_compliance": "High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: if there is a no clear concern for the company basis the discussion on the regulatory issues",
-            "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
-        }
-        
-        # Classify each unique flag with enhanced validation
+        # Enhanced classification with numerical analysis
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
+        numerical_analyses = []
         
-        if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
+        if unique_flags and unique_flags[0] != "Error in flag extraction":
             for i, flag in enumerate(unique_flags, 1):
+                print(f"Analyzing flag {i}/{len(unique_flags)}: {flag[:100]}...")
+                
                 try:
-                    classification = enhanced_flag_classification(
-                        flag=flag,
-                        previous_year_data=previous_year_data,
-                        context=context,
-                        criteria_definitions=criteria_definitions,
-                        llm=llm
-                    )
+                    # Use enhanced quantitative classification
+                    classification = analyzer.classify_flag_enhanced(flag, llm)
                     
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': classification['matched_criteria'],
                         'risk_level': classification['risk_level'],
                         'reasoning': classification['reasoning'],
-                        'validation_type': classification.get('validation_type', 'unknown')
+                        'numerical_analysis': classification['numerical_analysis'],
+                        'confidence': classification['confidence']
                     })
                     
-                    # Enhanced high-risk filtering
+                    numerical_analyses.append(classification)
+                    
+                    # Classify based on enhanced analysis
                     if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None' and
-                        classification.get('validation_type') in ['quantitative_validated', 'qualitative_validated']):
+                        classification['matched_criteria'] != 'None'):
                         high_risk_flags.append(flag)
                     else:
                         low_risk_flags.append(flag)
                         
+                    print(f"  → {classification['risk_level']} risk ({classification['matched_criteria']})")
+                        
                 except Exception as e:
-                    logger.error(f"Error classifying flag {i}: {e}")
+                    logger.error(f"Error in enhanced classification for flag {i}: {e}")
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': 'None',
                         'risk_level': 'Low',
-                        'reasoning': f'Classification failed: {str(e)}',
-                        'validation_type': 'error'
+                        'reasoning': f'Enhanced classification failed: {str(e)}',
+                        'numerical_analysis': {},
+                        'confidence': 0.0
                     })
                     low_risk_flags.append(flag)
+                    numerical_analyses.append({})
                   
-                time.sleep(0.3)
+                time.sleep(0.3)  # Rate limiting
         
+        # Calculate enhanced risk metrics
         risk_counts = {
             'High': len(high_risk_flags),
             'Low': len(low_risk_flags),
             'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
         }
         
-        print(f"\n=== ENHANCED CLASSIFICATION RESULTS ===")
+        print(f"\n=== ENHANCED QUANTITATIVE ANALYSIS RESULTS ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
+        print(f"Risk Ratio: {(risk_counts['High']/risk_counts['Total']*100):.1f}%" if risk_counts['Total'] > 0 else "0%")
         
+        # Display detailed results
         if high_risk_flags:
-            print(f"\n--- HIGH RISK FLAGS ---")
+            print(f"\n--- HIGH RISK FLAGS (with numerical analysis) ---")
             for i, flag in enumerate(high_risk_flags, 1):
-                validation_type = next((r['validation_type'] for r in classification_results if r['flag'] == flag), 'unknown')
-                print(f"  {i}. {flag} [{validation_type}]")
-        else:
-            print(f"\n--- HIGH RISK FLAGS ---")
-            print("  No high risk flags identified")
+                print(f"  {i}. {flag}")
+                if i <= len(numerical_analyses):
+                    analysis = numerical_analyses[i-1].get('numerical_analysis', {})
+                    if analysis.get('calculated_change'):
+                        print(f"     → Change: {analysis['calculated_change']:.1f}%")
+                    if analysis.get('calculated_ratio'):
+                        print(f"     → Ratio: {analysis['calculated_ratio']:.1f}x")
+                    if analysis.get('threshold_met'):
+                        print(f"     → Threshold: {'EXCEEDED' if analysis['threshold_met'] else 'Not met'}")
         
-        # Extract company info and create Word document
-        print("\nCreating Word document...")
+        # Create enhanced Word document
+        print("\nCreating enhanced Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document
-            word_doc_path = create_word_document(
+            word_doc_path = create_enhanced_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
                 risk_counts=risk_counts,
@@ -1254,19 +1308,17 @@ Provide factual category summaries:"""
                 summary_by_categories=summary_by_categories,
                 output_folder=output_folder,
                 context=context,
-                llm=llm
+                llm=llm,
+                numerical_analyses=numerical_analyses
             )
             
             if word_doc_path:
-                print(f"Word document created: {word_doc_path}")
-            else:
-                print("Failed to create Word document")
-                
+                print(f"Enhanced Word document created: {word_doc_path}")
+            
         except Exception as e:
-            logger.error(f"Error creating Word document: {e}")
-            word_doc_path = None
+            logger.error(f"Error creating enhanced Word document: {e}")
        
-        # Save all results to CSV files
+        # Save enhanced results
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
         # Save pipeline results
@@ -1274,103 +1326,125 @@ Provide factual category summaries:"""
             "pdf_name": [pdf_name] * 5,
             "iteration": [1, 2, 3, 4, 5],
             "stage": [
-                "Initial Analysis",
-                "Deduplication", 
-                "Categorization",
-                "Summary Generation",
-                "Enhanced Classification with Validation"
+                "Enhanced Numerical Analysis",
+                "Enhanced Deduplication", 
+                "Enhanced Categorization",
+                "Quantitative Summary Generation",
+                "Enhanced Quantitative Classification"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
+                f"Enhanced Quantitative Analysis: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk from {risk_counts['Total']} total flags"
             ],
             "timestamp": [timestamp] * 5
         })
        
-        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_results.csv")
+        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_quantitative_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results
-        if len(classification_results) > 0:
-            classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification.csv")
-            classification_df.to_csv(classification_file, index=False)
+        # Save detailed numerical analysis results
+        if classification_results:
+            # Flatten numerical analysis for CSV
+            flattened_results = []
+            for result in classification_results:
+                flat_result = {
+                    'flag': result['flag'],
+                    'matched_criteria': result['matched_criteria'],
+                    'risk_level': result['risk_level'],
+                    'reasoning': result['reasoning'],
+                    'confidence': result['confidence']
+                }
+                
+                # Add numerical analysis details
+                num_analysis = result.get('numerical_analysis', {})
+                flat_result.update({
+                    'calculated_change': num_analysis.get('calculated_change'),
+                    'calculated_ratio': num_analysis.get('calculated_ratio'),
+                    'percentage_of_ebitda': num_analysis.get('percentage_of_ebitda'),
+                    'threshold_met': num_analysis.get('threshold_met'),
+                    'baseline_value': num_analysis.get('baseline_value'),
+                    'calculation_type': num_analysis.get('calculation_type'),
+                    'extracted_numbers_count': len(num_analysis.get('extracted_numbers', []))
+                })
+                
+                flattened_results.append(flat_result)
+            
+            analysis_df = pd.DataFrame(flattened_results)
+            analysis_file = os.path.join(output_folder, f"{pdf_name}_enhanced_numerical_analysis.csv")
+            analysis_df.to_csv(analysis_file, index=False)
 
-        print(f"\n=== PROCESSING COMPLETE FOR {pdf_name} ===")
+        print(f"\n=== ENHANCED PROCESSING COMPLETE FOR {pdf_name} ===")
         return results_summary
        
     except Exception as e:
-        logger.error(f"Error processing {pdf_name}: {str(e)}")
+        logger.error(f"Error in enhanced processing for {pdf_name}: {str(e)}")
         return None
 
 def main():
-    """Main function to process all PDFs in the specified folder"""
+    """Enhanced main function with quantitative analysis pipeline"""
     
     # Configuration
     pdf_folder_path = r"vedanta_pdf" 
     queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"vedanta_results_enhanced"
+    output_folder = r"vedanta_enhanced_quantitative_results"
 
     api_key = "8496bd1d498c"
     azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1-mini"
   
-    # MANUALLY SET YOUR PREVIOUS YEAR DATA HERE FOR EACH PDF
-    # Change this string for each company/PDF you process
+    # Enhanced structured previous year data
     previous_year_data = """
 Previous reported Debt	Mar-23	80,329Cr
 Current quarter ebidta	March-24	11,511Cr
-Previous reported asset value	Mar-23	189,455Cr
-Previous reported receivable days	Mar-23	10days
-Previous reported payable days	Mar-23	91days
+Previous reported asset_value	Mar-23	189,455Cr
+Previous reported receivable_days	Mar-23	10days
+Previous reported payable_days	Mar-23	91days
 Previous reported revenue	Dec-23	35,541Cr
 Previous reported profitability	Dec-23	2,275Cr
-Previous reported operating margin	Dec-23	25%
-Previous reported cash balance	Mar-23	9,254Cr
-Previous reported current liabilities	Mar-23	36,407Cr
+Previous reported operating_margin	Dec-23	25%
+Previous reported cash_balance	Mar-23	9,254Cr
+Previous reported current_liabilities	Mar-23	36,407Cr
 """
-
+    
     os.makedirs(output_folder, exist_ok=True)
     
-    # Process all PDFs in folder
+    # Process all PDFs
     pdf_files = glob.glob(os.path.join(pdf_folder_path, "*.pdf"))
     if not pdf_files:
         print(f"No PDF files found in {pdf_folder_path}")
         return    
     
+    print(f"Found {len(pdf_files)} PDF files to process with enhanced quantitative analysis")
+    
     for i, pdf_file in enumerate(pdf_files, 1):
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         print(f"PROCESSING PDF {i}/{len(pdf_files)}: {os.path.basename(pdf_file)}")
-        print(f"{'='*60}")
+        print(f"ENHANCED QUANTITATIVE ANALYSIS PIPELINE")
+        print(f"{'='*80}")
         
         start_time = time.time()
         
-        try:
-            # Process with enhanced pipeline using your manual string
-            result = process_pdf_enhanced_pipeline(
-                pdf_path=pdf_file,
-                queries_csv_path=queries_csv_path,
-                previous_year_data=previous_year_data,  # Your manual string here
-                output_folder=output_folder,
-                api_key=api_key,
-                azure_endpoint=azure_endpoint,
-                api_version=api_version,
-                deployment_name=deployment_name
-            )
-            
-            processing_time = time.time() - start_time
-            
-            if result is not None:
-                print(f"✅ Successfully processed {pdf_file} in {processing_time:.2f} seconds")
-            else:
-                print(f"❌ Failed to process {pdf_file}")
-                
-        except Exception as e:
-            print(f"❌ Error processing {pdf_file}: {str(e)}")
+        result = process_pdf_enhanced_quantitative_pipeline(
+            pdf_path=pdf_file,
+            queries_csv_path=queries_csv_path,
+            previous_year_data_str=previous_year_data,
+            output_folder=output_folder,
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            deployment_name=deployment_name
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result is not None:
+            print(f"✅ Successfully processed {pdf_file} with enhanced quantitative analysis in {processing_time:.2f} seconds")
+        else:
+            print(f"❌ Failed to process {pdf_file}")
 
 if __name__ == "__main__":
     main()
