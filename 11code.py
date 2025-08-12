@@ -103,20 +103,35 @@ def extract_company_info_from_pdf(pdf_path: str, llm: AzureOpenAILLM) -> str:
        
         first_page_text = first_page_text[:2000]
        
-        prompt = f"""
-Extract the company name, quarter, and financial year from this text from an earnings call transcript.
+        prompt = f"""<role>
+You are an expert document analyst specializing in extracting key corporate information from financial documents and earnings transcripts.
+</role>
 
-Text: {first_page_text}
+<system_prompt>
+You excel at quickly identifying and extracting specific corporate identifiers from financial documents with high accuracy and consistency.
+</system_prompt>
 
-Please identify:
-1. Company Name (full company name including Ltd/Limited/Inc etc.)
-2. Quarter (Q1/Q2/Q3/Q4)  
-3. Financial Year (FY23/FY24/FY25 etc.)
+<instruction>
+Extract the company name, quarter, and financial year from the provided text.
 
-Format: [Company Name]-[Quarter][Financial Year]
+EXTRACTION REQUIREMENTS:
+1. Company Name: Full legal company name including suffixes (Ltd/Limited/Inc/Corp etc.)
+2. Quarter: Identify the quarter (Q1/Q2/Q3/Q4)  
+3. Financial Year: Extract financial year (FY23/FY24/FY25 etc.)
+
+OUTPUT FORMAT:
+Provide ONLY the result in this exact format: [Company Name]-[Quarter][Financial Year]
 Example: Reliance Industries Limited-Q4FY25
 
-Response:"""
+If any component cannot be clearly identified, use reasonable defaults based on context.
+</instruction>
+
+<context>
+DOCUMENT TEXT TO ANALYZE:
+{first_page_text}
+</context>
+
+Extract company information:"""
        
         response = llm._call(prompt, max_tokens=200)
         response_lines = response.strip().split('\n')
@@ -130,42 +145,393 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def extract_unique_flags_with_strict_deduplication(response_text: str, llm: AzureOpenAILLM) -> List[str]:
+# CSV functions removed - using manual string input instead
+
+def parse_previous_year_data(previous_year_data: str) -> dict:
+    """Convert previous year data string into structured JSON for better LLM understanding"""
+    
+    parsed_data = {
+        "previous_metrics": {},
+        "formatted_for_llm": ""
+    }
+    
+    try:
+        lines = previous_year_data.strip().split('\n')
+        
+        for line in lines:
+            if line.strip() and '\t' in line:
+                parts = line.strip().split('\t')
+                if len(parts) >= 3:
+                    metric_name = parts[0].strip()
+                    date = parts[1].strip()
+                    value = parts[2].strip()
+                    
+                    # Extract numeric values and map to metrics
+                    if "debt" in metric_name.lower():
+                        parsed_data["previous_metrics"]["debt"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "ebitda" in metric_name.lower() or "ebidta" in metric_name.lower():
+                        parsed_data["previous_metrics"]["ebitda"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "asset" in metric_name.lower():
+                        parsed_data["previous_metrics"]["assets"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "receivable days" in metric_name.lower():
+                        parsed_data["previous_metrics"]["receivable_days"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Days"
+                        }
+                    elif "payable days" in metric_name.lower():
+                        parsed_data["previous_metrics"]["payable_days"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Days"
+                        }
+                    elif "revenue" in metric_name.lower():
+                        parsed_data["previous_metrics"]["revenue"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "profitability" in metric_name.lower():
+                        parsed_data["previous_metrics"]["profitability"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "margin" in metric_name.lower():
+                        parsed_data["previous_metrics"]["operating_margin"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Percentage"
+                        }
+                    elif "cash" in metric_name.lower():
+                        parsed_data["previous_metrics"]["cash_balance"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+                    elif "liabilities" in metric_name.lower():
+                        parsed_data["previous_metrics"]["current_liabilities"] = {
+                            "value": value,
+                            "numeric": extract_numeric_value(value),
+                            "date": date,
+                            "unit": "Crores"
+                        }
+        
+        # Create formatted string for LLM
+        parsed_data["formatted_for_llm"] = create_llm_formatted_string(parsed_data["previous_metrics"])
+        
+        return parsed_data
+        
+    except Exception as e:
+        print(f"Error parsing previous year data: {e}")
+        return {
+            "previous_metrics": {},
+            "formatted_for_llm": "Error parsing previous year data"
+        }
+
+def extract_numeric_value(value_str: str) -> float:
+    """Extract numeric value from string like '80,329Cr' or '25%'"""
+    try:
+        clean_value = value_str.replace('Cr', '').replace('%', '').replace('days', '').replace(',', '').strip()
+        return float(clean_value)
+    except:
+        return 0.0
+
+def create_llm_formatted_string(metrics: dict) -> str:
+    """Create a well-formatted string for LLM understanding"""
+    
+    formatted = "PREVIOUS YEAR FINANCIAL METRICS:\n\n"
+    
+    # Financial Position Metrics
+    formatted += "BALANCE SHEET METRICS:\n"
+    if "debt" in metrics:
+        formatted += f"• Total Debt: {metrics['debt']['value']} (as of {metrics['debt']['date']})\n"
+    if "assets" in metrics:
+        formatted += f"• Total Assets: {metrics['assets']['value']} (as of {metrics['assets']['date']})\n"
+    if "cash_balance" in metrics:
+        formatted += f"• Cash Balance: {metrics['cash_balance']['value']} (as of {metrics['cash_balance']['date']})\n"
+    if "current_liabilities" in metrics:
+        formatted += f"• Current Liabilities: {metrics['current_liabilities']['value']} (as of {metrics['current_liabilities']['date']})\n"
+    
+    formatted += "\nPERFORMANCE METRICS:\n"
+    if "revenue" in metrics:
+        formatted += f"• Revenue: {metrics['revenue']['value']} (for period ending {metrics['revenue']['date']})\n"
+    if "ebitda" in metrics:
+        formatted += f"• EBITDA: {metrics['ebitda']['value']} (for period ending {metrics['ebitda']['date']})\n"
+    if "profitability" in metrics:
+        formatted += f"• Profitability: {metrics['profitability']['value']} (for period ending {metrics['profitability']['date']})\n"
+    if "operating_margin" in metrics:
+        formatted += f"• Operating Margin: {metrics['operating_margin']['value']} (for period ending {metrics['operating_margin']['date']})\n"
+    
+    formatted += "\nWORKING CAPITAL METRICS:\n"
+    if "receivable_days" in metrics:
+        formatted += f"• Receivable Days: {metrics['receivable_days']['value']} (as of {metrics['receivable_days']['date']})\n"
+    if "payable_days" in metrics:
+        formatted += f"• Payable Days: {metrics['payable_days']['value']} (as of {metrics['payable_days']['date']})\n"
+    
+    formatted += "\nUSE THESE METRICS FOR COMPARISON WITH CURRENT PERIOD DATA TO IDENTIFY RED FLAGS.\n"
+    
+    return formatted
+
+def extract_current_metrics_from_document(context: str, llm: AzureOpenAILLM) -> Dict[str, float]:
+    """Extract current financial metrics from the document"""
+    
+    extraction_prompt = f"""Extract CURRENT PERIOD financial metrics from this document.
+
+REQUIRED METRICS (extract exact numbers only):
+1. Current Total Debt (in Crores)
+2. Current EBITDA (in Crores)
+3. Current Revenue (in Crores) 
+4. Current Operating Margin (as %)
+5. Current Cash Balance (in Crores)
+6. Current Assets (in Crores)
+7. Current Liabilities (in Crores)
+8. Current Receivable Days (in days)
+9. Current Payable Days (in days)
+
+OUTPUT FORMAT (JSON only):
+{{
+    "debt": 85000,
+    "ebitda": 12000,
+    "revenue": 38000,
+    "operating_margin": 22.5,
+    "cash_balance": 8500,
+    "assets": 195000,
+    "current_liabilities": 42000,
+    "receivable_days": 13,
+    "payable_days": 118
+}}
+
+If metric not found, use null.
+
+DOCUMENT TEXT:
+{context[:8000]}
+
+Extract current metrics:"""
+    
+    try:
+        response = llm._call(extraction_prompt, max_tokens=400, temperature=0.0)
+        current_metrics = json.loads(response.strip())
+        return current_metrics
+    except Exception as e:
+        print(f"Error extracting current metrics: {e}")
+        return {}
+
+def validate_quantitative_criteria(current_metrics: Dict, previous_metrics: Dict) -> Dict[str, Dict]:
+    """Perform mathematical validation against quantitative thresholds"""
+    
+    validations = {}
+    
+    try:
+        # Debt Increase Validation
+        if (current_metrics.get('debt') and previous_metrics.get('debt', {}).get('numeric')):
+            current_debt = current_metrics['debt']
+            previous_debt = previous_metrics['debt']['numeric']
+            debt_change = (current_debt - previous_debt) / previous_debt
+            
+            validations['debt_increase'] = {
+                'triggered': debt_change >= 0.30,
+                'severity': 'High' if debt_change >= 0.30 else 'Low',
+                'value': debt_change * 100,
+                'evidence': f"Debt changed from {previous_debt:,.0f}Cr to {current_debt:,.0f}Cr ({debt_change*100:.1f}%)"
+            }
+        
+        # Revenue Decline Validation
+        if (current_metrics.get('revenue') and previous_metrics.get('revenue', {}).get('numeric')):
+            current_revenue = current_metrics['revenue']
+            previous_revenue = previous_metrics['revenue']['numeric']
+            revenue_change = (current_revenue - previous_revenue) / previous_revenue
+            
+            if revenue_change < 0:  # Only if decline
+                validations['revenue_decline'] = {
+                    'triggered': abs(revenue_change) >= 0.25,
+                    'severity': 'High' if abs(revenue_change) >= 0.25 else 'Low',
+                    'value': revenue_change * 100,
+                    'evidence': f"Revenue declined from {previous_revenue:,.0f}Cr to {current_revenue:,.0f}Cr ({revenue_change*100:.1f}%)"
+                }
+        
+        # Operating Margin Decline
+        if (current_metrics.get('operating_margin') and previous_metrics.get('operating_margin', {}).get('numeric')):
+            current_margin = current_metrics['operating_margin']
+            previous_margin = previous_metrics['operating_margin']['numeric']
+            margin_change = (current_margin - previous_margin) / previous_margin
+            
+            if margin_change < 0:  # Only if decline
+                validations['margin_decline'] = {
+                    'triggered': abs(margin_change) >= 0.25,
+                    'severity': 'High' if abs(margin_change) >= 0.25 else 'Low',
+                    'value': margin_change * 100,
+                    'evidence': f"Operating margin declined from {previous_margin}% to {current_margin}% ({margin_change*100:.1f}%)"
+                }
+        
+        # Cash Balance Decline
+        if (current_metrics.get('cash_balance') and previous_metrics.get('cash_balance', {}).get('numeric')):
+            current_cash = current_metrics['cash_balance']
+            previous_cash = previous_metrics['cash_balance']['numeric']
+            cash_change = (current_cash - previous_cash) / previous_cash
+            
+            if cash_change < 0:  # Only if decline
+                validations['cash_balance'] = {
+                    'triggered': abs(cash_change) >= 0.25,
+                    'severity': 'High' if abs(cash_change) >= 0.25 else 'Low',
+                    'value': cash_change * 100,
+                    'evidence': f"Cash balance declined from {previous_cash:,.0f}Cr to {current_cash:,.0f}Cr ({cash_change*100:.1f}%)"
+                }
+        
+        # EBITDA Coverage (for provisions)
+        if current_metrics.get('ebitda'):
+            ebitda_threshold = current_metrics['ebitda'] * 0.25
+            validations['ebitda_coverage'] = {
+                'threshold': ebitda_threshold,
+                'ebitda': current_metrics['ebitda']
+            }
+        
+        return validations
+        
+    except Exception as e:
+        print(f"Error in quantitative validation: {e}")
+        return {}
+
+def detect_qualitative_flags(context: str, llm: AzureOpenAILLM) -> Dict[str, Dict]:
+    """Detect qualitative red flags using advanced keyword and context analysis"""
+    
+    qualitative_prompt = f"""Detect SPECIFIC qualitative red flags in this document.
+
+SCAN FOR THESE QUALITATIVE ISSUES:
+1. Management Issues: Leadership changes, resignations, governance problems
+2. Regulatory Issues: Compliance violations, penalties, regulatory warnings
+3. Operational Disruptions: Supply chain, production, delivery issues  
+4. Market Competition: Competitive pressure, market share loss
+5. Employee Issues: High attrition, manpower problems, strikes
+
+DETECTION RULES:
+- Must be CLEARLY mentioned in the document
+- Must indicate a CONCERN or PROBLEM (not just neutral mentions)
+- Must have SPECIFIC evidence or examples
+
+OUTPUT FORMAT (JSON only):
+{{
+    "management_issues": {{
+        "detected": true/false,
+        "severity": "High/Low",
+        "evidence": ["specific quote 1", "specific quote 2"]
+    }},
+    "regulatory_issues": {{
+        "detected": true/false,
+        "severity": "High/Low", 
+        "evidence": ["specific quote 1"]
+    }},
+    "operational_disruptions": {{
+        "detected": true/false,
+        "severity": "High/Low",
+        "evidence": ["specific quote 1"]
+    }},
+    "market_competition": {{
+        "detected": true/false,
+        "severity": "High/Low",
+        "evidence": ["specific quote 1"]
+    }},
+    "employee_issues": {{
+        "detected": true/false,
+        "severity": "High/Low",
+        "evidence": ["specific quote 1"]
+    }}
+}}
+
+DOCUMENT TEXT:
+{context[:8000]}
+
+Detect qualitative flags:"""
+    
+    try:
+        response = llm._call(qualitative_prompt, max_tokens=600, temperature=0.0)
+        qualitative_flags = json.loads(response.strip())
+        
+        # Filter only detected flags
+        detected_flags = {}
+        for flag_type, details in qualitative_flags.items():
+            if details.get('detected', False):
+                detected_flags[flag_type] = {
+                    'triggered': True,
+                    'severity': details.get('severity', 'High'),
+                    'evidence': details.get('evidence', []),
+                    'validation_type': 'qualitative'
+                }
+        
+        return detected_flags
+        
+    except Exception as e:
+        print(f"Error in qualitative detection: {e}")
+        return {}
+
+def extract_unique_flags_with_enhanced_deduplication(response_text: str, llm: AzureOpenAILLM) -> List[str]:
     """Enhanced extraction with STRICT deduplication to prevent duplicates"""
     
-    prompt = f"""
-You are an expert financial analyst tasked with extracting TRULY UNIQUE red flags with ZERO duplicates.
+    prompt = f"""<role>
+You are an expert financial analyst specializing in red flag extraction and deduplication with 15+ years of experience in financial risk assessment.
+</role>
 
-RED FLAGS ANALYSIS TO PROCESS:
+<system_prompt>
+You excel at identifying unique financial concerns, eliminating redundancy, and extracting the most critical risk factors that require management attention and investor awareness.
+</system_prompt>
+
+<instruction>
+Extract UNIQUE financial red flags from the analysis text with ZERO duplicates or overlapping concerns.
+
+EXTRACTION RULES:
+1. Extract all distinct financial red flags mentioned in the text
+2. Each flag must represent a COMPLETELY separate financial concern
+3. Merge similar flags into one comprehensive statement
+4. Remove generic statements without specific value
+5. Prioritize flags with quantitative data over vague statements
+6. Focus on actionable, specific concerns
+7. Use clear, concise business language
+8. Maximum 10 most critical flags
+
+DEDUPLICATION ALGORITHM:
+- If 2+ flags address the same underlying issue → MERGE into one comprehensive flag
+- If one flag is a subset of another → REMOVE the subset
+- If flags share >60% similar keywords → CONSOLIDATE
+
+OUTPUT FORMAT:
+Return ONLY a clean Python list with no additional text or explanations.
+Format: ["flag 1", "flag 2", "flag 3", ...]
+
+QUALITY CRITERIA:
+- Each flag = distinct financial risk
+- No redundancy or overlap between flags
+- Specific and actionable statements
+- Include numbers/percentages when available
+- Professional financial terminology
+</instruction>
+
+<context>
+FINANCIAL ANALYSIS TO PROCESS:
 {response_text}
+</context>
 
-ULTRA-STRICT DEDUPLICATION RULES:
-1. If multiple flags refer to the SAME underlying financial issue, merge them into ONE comprehensive flag
-2. Remove any flag that is a subset or variation of a broader flag
-3. Combine similar concepts: "Debt increased" + "Higher debt levels" + "Rising debt burden" → "Debt levels increased significantly"
-4. Remove generic flags that don't add specific value
-5. Each flag must represent a COMPLETELY DISTINCT financial concern
-6. Prioritize flags with specific numbers/percentages over generic statements
-7. If two flags are even slightly similar, merge them or keep only the more specific one
-8. AGGRESSIVE deduplication - when in doubt, merge or eliminate
-
-EXAMPLES OF WHAT TO MERGE:
-- "Revenue declined" + "Sales decreased" + "Top line fell" → "Revenue/sales declined"
-- "Margin pressure" + "Profitability issues" + "Reduced margins" → "Margin compression and profitability pressure"
-- "Cash flow problems" + "Liquidity concerns" + "Working capital issues" → "Cash flow and liquidity challenges"
-- "Debt issues" + "Borrowing concerns" + "Leverage problems" → "Debt and leverage concerns"
-
-ULTRA-STRICT OUTPUT REQUIREMENTS:
-- Return ONLY a clean Python list format
-- Each flag should be a concise, specific statement 
-- ZERO duplicates, ZERO similar flags, ZERO overlapping concerns
-- Focus on the most critical and completely distinct issues only
-- Apply MAXIMUM deduplication - be ruthless in eliminating similarities
-
-Format: ["unique flag 1", "unique flag 2", "unique flag 3", ...]
-
-EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
-"""
+Extract unique flags:"""
     
     try:
         response = llm._call(prompt, max_tokens=600, temperature=0.0)
@@ -173,44 +539,39 @@ EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
         # Try to parse as Python list
         try:
             unique_flags = ast.literal_eval(response.strip())
-            if isinstance(unique_flags, list) and len(unique_flags) <= 12:
+            if isinstance(unique_flags, list) and len(unique_flags) <= 10:
                 flags_list = [flag.strip() for flag in unique_flags if flag.strip()]
             else:
                 flags_list = unique_flags[:10] if len(unique_flags) > 10 else unique_flags
         except:
-            # Fallback parsing if ast.literal_eval fails
+            # Fallback parsing
             lines = response.strip().split('\n')
             flags_list = []
             
             for line in lines:
                 line = line.strip()
-                # Look for quoted strings
                 if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
                     flag = line[1:-1].strip()
-                    if flag and len(flag) > 5:
+                    if flag and len(flag) > 10:
                         flags_list.append(flag)
-                # Look for list items
                 elif line.startswith('- ') or line.startswith('* '):
                     flag = line[2:].strip()
-                    if flag and len(flag) > 5:
+                    if flag and len(flag) > 10:
                         flags_list.append(flag)
         
-        # Apply additional aggressive deduplication
+        # Additional deduplication
         final_flags = []
-        seen_keywords = []  # Changed from set to list
+        seen_keywords = []
         
         for flag in flags_list:
-            if not flag or len(flag) <= 5:
+            if not flag or len(flag) <= 10:
                 continue
                 
-            # Create normalized version for comparison
             normalized = re.sub(r'[^\w\s]', '', flag.lower()).strip()
             words = set(normalized.split())
             
-            # Check for keyword overlap with existing flags
             is_duplicate = False
             for existing_keywords in seen_keywords:
-                # If more than 60% of words overlap, consider it duplicate
                 overlap = len(words.intersection(existing_keywords)) / max(len(words), len(existing_keywords))
                 if overlap > 0.6:
                     is_duplicate = True
@@ -218,102 +579,119 @@ EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
             
             if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
-                seen_keywords.append(words)  # Append the set to the list
+                seen_keywords.append(words)
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
     except Exception as e:
-        logger.error(f"Error in strict deduplication: {e}")
+        logger.error(f"Error in flag extraction: {e}")
         return ["Error in flag extraction"]
 
-def classify_flag_against_criteria_strict(flag: str, criteria_definitions: Dict[str, str], 
-                                 previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Strictly classify a single flag against 15 criteria - only High if exact match found"""
-    criteria_keywords = {
-        "debt_increase": ["debt increase", "debt increased", "debt rising", "debt growth", "higher debt", "debt went up", "debt levels", "borrowing increase"],
-        "provisioning": ["provision", "write-off", "write off", "writeoff", "bad debt", "impairment", "credit loss"],
-        "asset_decline": ["asset decline", "asset fall", "asset decrease", "asset value down", "asset reduction", "asset impairment"],
-        "receivable_days": ["receivable days", "collection period", "DSO", "days sales outstanding", "collection time"],
-        "payable_days": ["payable days", "payment period", "DPO", "days payable outstanding", "payment delay"],
-        "debt_ebitda": ["debt to ebitda", "debt/ebitda", "debt ebitda ratio", "leverage ratio", "debt multiple"],
-        "revenue_decline": ["revenue decline", "revenue fall", "revenue decrease", "sales decline", "top line decline", "income reduction"],
-        "onetime_expenses": ["one-time", "onetime", "exceptional", "extraordinary", "non-recurring", "special charges"],
-        "margin_decline": ["margin decline", "margin fall", "margin pressure", "margin compression", "profitability decline", "margin squeeze"],
-        "cash_balance": ["cash decline", "cash decrease", "cash balance fall", "liquidity issue", "cash shortage", "cash position"],
-        "short_term_debt": ["short-term debt", "current liabilities", "working capital", "short term borrowing", "immediate obligations"],
-        "management_issues": ["management change", "leadership change", "CEO", "CFO", "resignation", "departure", "management turnover"],
-        "regulatory_compliance": ["regulatory", "compliance", "regulation", "regulator", "legal", "penalty", "violation", "sanctions"],
-        "market_competition": ["competition", "competitive", "market share", "competitor", "market pressure", "competitive pressure"],
-        "operational_disruptions": ["operational", "supply chain", "production", "manufacturing", "disruption", "operational issues"]
-    }
+def enhanced_flag_classification(flag: str, previous_year_data: str, context: str, 
+                               criteria_definitions: Dict[str, str], llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Enhanced classification with mathematical validation and qualitative detection"""
     
-    criteria_list = "\n".join([f"{i+1}. {name}: {desc}" for i, (name, desc) in enumerate(criteria_definitions.items())])
+    # Parse previous year data
+    parsed_data = parse_previous_year_data(previous_year_data)
     
-    # Build keyword list for prompt
-    keywords_section = "\nKEYWORDS FOR EACH CRITERIA:\n"
-    for criteria, keywords in criteria_keywords.items():
-        keywords_section += f"  * {criteria}: {', '.join(keywords)}\n"
-        
-    prompt = f"""
-You are a STRICT financial risk classifier. Follow these EXACT rules with NO exceptions:
+    # Extract current metrics
+    current_metrics = extract_current_metrics_from_document(context, llm)
+    
+    # Run quantitative validations
+    quant_validations = validate_quantitative_criteria(current_metrics, parsed_data["previous_metrics"])
+    
+    # Run qualitative detections
+    qual_flags = detect_qualitative_flags(context, llm)
+    
+    # Check if flag matches any validated quantitative criteria
+    flag_lower = flag.lower()
+    
+    # Check quantitative matches first (most reliable)
+    for criteria, validation in quant_validations.items():
+        if validation.get('triggered', False):
+            criteria_keywords = {
+                'debt_increase': ['debt', 'borrowing', 'leverage'],
+                'revenue_decline': ['revenue', 'sales', 'income', 'top line'],
+                'margin_decline': ['margin', 'profitability', 'profit'],
+                'cash_balance': ['cash', 'liquidity', 'working capital']
+            }
+            
+            keywords = criteria_keywords.get(criteria, [])
+            if any(keyword in flag_lower for keyword in keywords):
+                return {
+                    'matched_criteria': criteria,
+                    'risk_level': validation['severity'],
+                    'reasoning': validation['evidence'],
+                    'validation_type': 'quantitative_validated'
+                }
+    
+    # Check qualitative matches
+    for criteria, detection in qual_flags.items():
+        if detection.get('triggered', False):
+            criteria_keywords = {
+                'management_issues': ['management', 'leadership', 'ceo', 'cfo', 'resignation'],
+                'regulatory_issues': ['regulatory', 'compliance', 'penalty', 'violation'],
+                'operational_disruptions': ['operational', 'supply chain', 'production'],
+                'market_competition': ['competition', 'market share', 'competitor'],
+                'employee_issues': ['employee', 'attrition', 'manpower', 'workforce']
+            }
+            
+            keywords = criteria_keywords.get(criteria, [])
+            if any(keyword in flag_lower for keyword in keywords):
+                return {
+                    'matched_criteria': criteria,
+                    'risk_level': detection['severity'],
+                    'reasoning': f"Qualitative evidence: {', '.join(detection['evidence'][:2])}",
+                    'validation_type': 'qualitative_validated'
+                }
+    
+    # Fallback to LLM classification for unmatched flags
+    classification_prompt = f"""
+Classify this red flag against criteria using structured previous year data.
 
-RED FLAG TO CLASSIFY: "{flag}"
-
-KEYWORDS FOR EACH CRITERIA:
-{keywords_section}
+RED FLAG: "{flag}"
 
 CRITERIA DEFINITIONS:
-{criteria_list}
+{chr(10).join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])}
 
-PREVIOUS YEAR DATA FOR THRESHOLD CHECKING:
-{previous_year_data}
+STRUCTURED PREVIOUS YEAR DATA:
+{parsed_data["formatted_for_llm"]}
 
-STRICT CLASSIFICATION ALGORITHM:
-Step 1: Check for EXACT KEYWORD MATCH using the keyword listed above
-Step 2: If NO keyword match found → AUTOMATICALLY classify as "Low"
-Step 3: If keyword match found → Check threshold criteria against previous year data
-Step 4: Classify as "High" ONLY if BOTH conditions met:
-   a) Exact keyword match exists
-   b) Threshold criteria is satisfied
+RULES:
+1. Match flag to most relevant criteria
+2. Use High/Low thresholds from criteria definitions
+3. Provide specific reasoning
 
-DEFAULT RULE: When in doubt → classify as "Low"
-
-OUTPUT FORMAT (follow exactly):
-Matched_Criteria: [exact criteria name if keyword found, otherwise "None"]
-Risk_Level: [High only if both keyword AND threshold met, otherwise Low]
-Reasoning: [Explain keyword search result and threshold check]
+OUTPUT FORMAT:
+Matched_Criteria: [criteria name or "None"]
+Risk_Level: [High or Low]
+Reasoning: [brief explanation]
 """
     
-    response = llm._call(prompt, max_tokens=300, temperature=0.0)
-    
-    # Initialize with safe defaults
-    result = {
-        'matched_criteria': 'None',
-        'risk_level': 'Low',
-        'reasoning': 'No exact keyword match found for any criteria'
-    }
-    
-    # Parse response
-    lines = response.strip().split('\n')
-    for line in lines:
-        if line.startswith('Matched_Criteria:'):
-            matched = line.split(':', 1)[1].strip()
-            result['matched_criteria'] = matched if matched not in ["None", ""] else 'None'
-        elif line.startswith('Risk_Level:'):
-            risk_level = line.split(':', 1)[1].strip()
-            if result['matched_criteria'] == 'None':
-                result['risk_level'] = 'Low'
-            else:
-                result['risk_level'] = risk_level if risk_level in ['High', 'Low'] else 'Low'
-        elif line.startswith('Reasoning:'):
-            result['reasoning'] = line.split(':', 1)[1].strip()
-    
-    # Final safety check
-    if result['matched_criteria'] == 'None':
-        result['risk_level'] = 'Low'
-        result['reasoning'] = 'No criteria keyword match - defaulted to Low risk'
-    
-    return result
+    try:
+        response = llm._call(classification_prompt, max_tokens=300, temperature=0.0)
+        
+        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No clear match found'}
+        
+        lines = response.strip().split('\n')
+        for line in lines:
+            if 'Matched_Criteria:' in line:
+                result['matched_criteria'] = line.split(':', 1)[1].strip()
+            elif 'Risk_Level:' in line:
+                result['risk_level'] = line.split(':', 1)[1].strip()
+            elif 'Reasoning:' in line:
+                result['reasoning'] = line.split(':', 1)[1].strip()
+        
+        result['validation_type'] = 'llm_fallback'
+        return result
+        
+    except Exception as e:
+        return {
+            'matched_criteria': 'None', 
+            'risk_level': 'Low', 
+            'reasoning': f'Error: {str(e)}',
+            'validation_type': 'error'
+        }
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -347,35 +725,34 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     if not high_risk_flags:
         return []
     
-    # First, deduplicate the high_risk_flags themselves
+    # Deduplicate high_risk_flags
     unique_high_risk_flags = []
-    seen_flag_keywords = []  # Changed from set to list
+    seen_flag_keywords = []
     
     for flag in high_risk_flags:
         normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
         flag_words = set(normalized_flag.split())
         
-        # Check for keyword overlap with existing flags
         is_duplicate_flag = False
         for existing_keywords in seen_flag_keywords:
             overlap = len(flag_words.intersection(existing_keywords)) / max(len(flag_words), len(existing_keywords))
-            if overlap > 0.7:  # High threshold for flag deduplication
+            if overlap > 0.7:
                 is_duplicate_flag = True
                 break
         
         if not is_duplicate_flag:
             unique_high_risk_flags.append(flag)
-            seen_flag_keywords.append(flag_words)  # Append the set to the list
+            seen_flag_keywords.append(flag_words)
     
     concise_summaries = []
-    seen_summary_keywords = []  # Changed from set to list
+    seen_summary_keywords = []
     
     for flag in unique_high_risk_flags:
         prompt = f"""
 Based on the original PDF context, create a VERY concise 1-2 line summary for this high risk flag.
 
 ORIGINAL PDF CONTEXT:
-{context}
+{context[:5000]}
 
 HIGH RISK FLAG: "{flag}"
 
@@ -387,20 +764,17 @@ STRICT REQUIREMENTS:
 5. Do NOT exceed 2 lines under any circumstances
 6. Do NOT start with "Summary:" or any prefix
 7. Provide ONLY the factual summary content
-8. Make it UNIQUE - avoid repeating information from other summaries
 
 OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
-
 """
         
         try:
             response = llm._call(prompt, max_tokens=100, temperature=0.1)
             
-            # Clean response - remove any prefixes or labels
             clean_response = response.strip()
             
-            # Remove common prefixes that might appear
-            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
+            # Remove common prefixes
+            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:"]
             for prefix in prefixes_to_remove:
                 if clean_response.startswith(prefix):
                     clean_response = clean_response[len(prefix):].strip()
@@ -415,28 +789,27 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             else:
                 concise_summary = '. '.join(summary_lines)
             
-            # Ensure proper ending
             if not concise_summary.endswith('.'):
                 concise_summary += '.'
             
-            # Check for duplicate content in summaries
+            # Check for duplicate content
             normalized_summary = re.sub(r'[^\w\s]', '', concise_summary.lower()).strip()
             summary_words = set(normalized_summary.split())
             
             is_duplicate_summary = False
             for existing_keywords in seen_summary_keywords:
                 overlap = len(summary_words.intersection(existing_keywords)) / max(len(summary_words), len(existing_keywords))
-                if overlap > 0.8:  # Very high threshold for summary deduplication
+                if overlap > 0.8:
                     is_duplicate_summary = True
                     break
             
             if not is_duplicate_summary:
                 concise_summaries.append(concise_summary)
-                seen_summary_keywords.append(summary_words)  # Append the set to the list
+                seen_summary_keywords.append(summary_words)
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
-            if len(concise_summaries) < len(unique_high_risk_flags):  # Only add fallback if we haven't added this one yet
+            if len(concise_summaries) < len(unique_high_risk_flags):
                 concise_summaries.append(f"{flag}. Review required based on analysis.")
     
     return concise_summaries
@@ -465,7 +838,6 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
         low_count = risk_counts.get('Low', 0)
         total_count = high_count + low_count
        
-        # Safely set table cells
         if len(table.rows) >= 3 and len(table.columns) >= 2:
             table.cell(0, 0).text = 'High Risk'
             table.cell(0, 1).text = str(high_count)
@@ -474,23 +846,21 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             table.cell(2, 0).text = 'Total Flags'
             table.cell(2, 1).text = str(total_count)
            
-            # Make headers bold
             for i in range(3):
                 if len(table.cell(i, 0).paragraphs) > 0 and len(table.cell(i, 0).paragraphs[0].runs) > 0:
                     table.cell(i, 0).paragraphs[0].runs[0].bold = True
        
         doc.add_paragraph('')
        
-        # High Risk Flags section with concise summaries
+        # High Risk Flags section
         if high_risk_flags and len(high_risk_flags) > 0:
             high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
             if len(high_risk_heading.runs) > 0:
                 high_risk_heading.runs[0].bold = True
            
-            # Generate concise summaries for high risk flags
             concise_summaries = generate_strict_high_risk_summary(high_risk_flags, context, llm)
             
-            # Final deduplication check at Word document level - more aggressive
+            # Final deduplication
             final_unique_summaries = []
             seen_content = set()
             
@@ -498,20 +868,17 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
                 if not summary or not summary.strip():
                     continue
                     
-                # Create multiple normalized versions for comparison
                 normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
                 normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
                 
-                # Check if this content is substantially different
                 is_unique = True
                 for seen in seen_content:
-                    # Calculate similarity
                     words1 = set(normalized2.split())
                     words2 = set(seen.split())
                     if len(words1) == 0 or len(words2) == 0:
                         continue
                     similarity = len(words1.intersection(words2)) / len(words1.union(words2))
-                    if similarity > 0.6:  # If more than 60% similar, consider duplicate
+                    if similarity > 0.6:
                         is_unique = False
                         break
                 
@@ -532,7 +899,7 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
         # Horizontal line
         doc.add_paragraph('_' * 50)
        
-        # Summary section (4th iteration results)
+        # Summary section
         summary_heading = doc.add_heading('Summary', level=1)
         if len(summary_heading.runs) > 0:
             summary_heading.runs[0].bold = True
@@ -584,7 +951,7 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Process PDF through enhanced 5-iteration pipeline with strict deduplication and classification
+    Process PDF through enhanced 5-iteration pipeline with CSV integration and improved accuracy
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -619,25 +986,45 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
         
         # ITERATION 1: Initial red flag identification
         print("Running 1st iteration - Initial Analysis...")
-        sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
- 
+        first_prompt = f"""<role>
+You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
+</role>
+
+<system_prompt>
+You excel at comprehensive document analysis, identifying subtle financial risks, and providing detailed evidence-based assessments with precise documentation.
+</system_prompt>
+
+<instruction>
+Analyze the ENTIRE document and identify ALL potential red flags comprehensively.
+
+ANALYSIS REQUIREMENTS:
+- Review every section of the document thoroughly
+- Identify financial, operational, strategic, and management risks
+- Focus on quantitative concerns with specific data points
+- Document exact quotes with speaker attribution
+- Number each red flag sequentially (1, 2, 3, etc.)
+- Include page references where available
+
+OUTPUT FORMAT:
+For each red flag:
+1. The potential red flag you observed - [brief description]
+Original Quote: "[exact quote with speaker name]" (Page X)
+
+CRITICAL: Ensure comprehensive analysis of the entire document.
+</instruction>
+
+<context>
 COMPLETE DOCUMENT TO ANALYZE:
 {context}
- 
-Your task is to analyze the ENTIRE document above and identify ALL potential red flags.
- 
-CRITICAL OUTPUT FORMAT REQUIREMENTS:
-- Number each red flag sequentially (1, 2, 3, etc.)
-- Start each entry with: "The potential red flag you observed - [brief description]"
-- Follow with "Original Quote:" and then the exact quote with speaker names
-- Include page references where available: (Page X)
-- Ensure comprehensive analysis of the entire document
-"""
+
+SPECIFIC QUESTION: {first_query}
+</context>
+
+Provide comprehensive red flag analysis:"""
         
-        first_prompt = f"{sys_prompt}\n\nQuestion: {first_query}\n\nAnswer:"
         first_response = llm._call(first_prompt, max_tokens=4000)
         
-        # ITERATION 2: Deduplication 
+        # ITERATION 2: Deduplication
         print("Running 2nd iteration - Deduplication...")
         second_prompt = "Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. Do not lose data if duplicates are not found."
         
@@ -656,90 +1043,113 @@ Answer:"""
         
         # ITERATION 3: Categorization
         print("Running 3rd iteration - Categorization...")
-        third_prompt = """You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
- 
-- Balance Sheet Issues: Red flags related to the company's assets, liabilities, equity, debt and overall financial position.
-- P&L (Income Statement) Issues: Red flags related to the company's revenues, expenses, profits, and overall financial performance.
-- Liquidity Issues: Concerns related to the company's ability to meet its short-term obligations, such as cash flow problems, debt repayment issues, or insufficient working capital.
-- Management and Strategy related Issues: Concerns related to leadership, governance, decision-making processes, overall strategy, vision, and direction.
-- Regulatory Issues: Concerns related Compliance with laws, regulations.
-- Industry and Market Issues: Concerns related Position within the industry, market trends, and competitive landscape.
-- Operational Issues: Concerns related Internal processes, systems, and infrastructure.
- 
-While categorizing the red flags strictly adhere to the following guidelines:
-1. Please review the below red flags and assign each one to the most relevant category.
-2. Do not loose information from the Original Quotes keep them as it is.
-3. If a red flag could fit into multiple categories, please assign it to the one that seems most closely related, do not leave any flag unclassified or fit it into multiple categories.
-4. While classifying, classify it in a such a way that the flags come under the categories along with their content. Strictly do not create a new category stick to what is mentioned above like an "Additional Red Flags", classify the flags in the above mentioned category only.
-5. Do not repeat a category more than once in the output.
- 
-**Output Format**:
+        third_prompt = f"""<role>
+You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
+</role>
+
+<system_prompt>
+You excel at organizing financial risks into standardized categories, ensuring comprehensive coverage of all financial risk areas, and maintaining accuracy in risk classification.
+</system_prompt>
+
+<instruction>
+Categorize the identified red flags into the following 7 standardized categories based on their financial nature and business impact.
+
+MANDATORY CATEGORIES:
+1. Balance Sheet Issues: Assets, liabilities, equity, debt, and overall financial position concerns
+2. P&L (Income Statement) Issues: Revenue, expenses, profits, and financial performance concerns  
+3. Liquidity Issues: Short-term obligations, cash flow, debt repayment, working capital concerns
+4. Management and Strategy Issues: Leadership, governance, decision-making, strategy, and vision concerns
+5. Regulatory Issues: Compliance, laws, regulations, and regulatory body concerns
+6. Industry and Market Issues: Market position, industry trends, competitive landscape concerns
+7. Operational Issues: Internal processes, systems, infrastructure, and operational efficiency concerns
+
+CATEGORIZATION RULES:
+- Assign each red flag to the MOST relevant category only
+- Do not create new categories - use only the 7 listed above
+- Preserve all Original Quotes exactly as provided
+- If a red flag could fit multiple categories, choose the primary/most relevant one
+- Do not leave any red flag unclassified
+- Do not repeat categories in the output
+- Maintain sequential organization within each category
+
+OUTPUT FORMAT:
 ### Balance Sheet Issues
-- [Red flag 1 with original quote]
-- [Red flag 2 with original quote]
- 
+- [Red flag 1 with original quote and page reference]
+- [Red flag 2 with original quote and page reference]
+
 ### P&L (Income Statement) Issues
-- [Red flag 1 with original quote]
-- [Red flag 2 with original quote]
- 
-Continue this format for all categories, ensuring every red flag from the previous analysis is categorized properly."""
-        
-        third_full_prompt = f"""You must answer the question strictly based on the below given context.
- 
-Context:
+- [Red flag 1 with original quote and page reference]
+
+Continue this format for all applicable categories.
+</instruction>
+
+<context>
+ORIGINAL DOCUMENT:
 {context}
- 
-Previous Analysis: {second_response}
- 
-Based on the above analysis and the original context, please answer: {third_prompt}
- 
-Answer:"""
+
+DEDUPLICATED ANALYSIS TO CATEGORIZE:
+{second_response}
+</context>
+
+Provide categorized analysis:"""
         
-        third_response = llm._call(third_full_prompt, max_tokens=4000)
+        third_response = llm._call(third_prompt, max_tokens=4000)
         
         # ITERATION 4: Summary generation
         print("Running 4th iteration - Summary Generation...")
-        fourth_prompt = """Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category of red flags in bullet point format. Follow these guidelines:
- 
-1. **Retain all information**: Ensure that no details are omitted or lost during the summarization process
-2. **Maintain a neutral tone**: Present the summary in a factual and objective manner, avoiding any emotional or biased language
-3. **Focus on factual content**: Base the summary solely on the information associated with each red flag, without introducing external opinions or assumptions
-4. **Include all red flags**: Incorporate every red flag within the category into the summary, without exception
-5. **Balance detail and concision**: Provide a summary that is both thorough and concise, avoiding unnecessary elaboration while still conveying all essential information
-6. **Incorporate quantitative data**: Wherever possible, include quantitative data and statistics to support the summary and provide additional context
-7. **Category-specific content**: Ensure that the summary is generated based solely on the content present within each category
-8. **Summary should be factual**: Avoid any subjective interpretations or opinions
-9. **Use bullet points**: Each red flag should be summarized as a separate bullet point with key details and data points
- 
-Format the output exactly like this example:
+        fourth_prompt = f"""<role>
+You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
+</role>
+
+<system_prompt>
+You excel at distilling complex financial analysis into clear, actionable summaries while maintaining objectivity, preserving all quantitative details, and ensuring no critical information is lost.
+</system_prompt>
+
+<instruction>
+Create a comprehensive summary of each category of red flags in bullet point format following these strict guidelines.
+
+SUMMARY REQUIREMENTS:
+1. Retain ALL quantitative information (numbers, percentages, ratios, dates)
+2. Maintain completely neutral, factual tone - no opinions or interpretations
+3. Include every red flag from each category - no omissions
+4. Base content solely on the provided categorized analysis
+5. Preserve specific data points and statistics wherever mentioned
+6. Each bullet point should capture key details of individual red flags
+7. Balance thoroughness with conciseness
+8. Use professional financial terminology
+9. Ensure category-specific content alignment
+
+OUTPUT FORMAT:
 ### Balance Sheet Issues
 * [Summary of red flag 1 with specific data points and factual information]
 * [Summary of red flag 2 with specific data points and factual information]
- 
+
 ### P&L (Income Statement) Issues  
 * [Summary of red flag 1 with specific data points and factual information]
- 
-Continue this format for all 7 categories. Each bullet point should be a concise summary that captures the key details of each red flag within that category, including relevant quantitative data where available."""
-        
-        fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
- 
-Context:
+
+Continue this format for all 7 categories that contain red flags.
+
+CRITICAL: Each bullet point represents a concise summary of individual red flags with preserved quantitative details.
+</instruction>
+
+<context>
+ORIGINAL DOCUMENT:
 {context}
- 
-Previous Analysis: {third_response}
- 
-Based on the above analysis and the original context, please answer: {fourth_prompt}
- 
-Answer:"""
+
+CATEGORIZED ANALYSIS TO SUMMARIZE:
+{third_response}
+</context>
+
+Provide factual category summaries:"""
         
-        fourth_response = llm._call(fourth_full_prompt, max_tokens=4000)
+        fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
-        # ITERATION 5: Extract unique flags with ENHANCED DEDUPLICATION and classify
-        print("Running 5th iteration - Enhanced Unique Flags Classification...")
+        # ITERATION 5: Enhanced flag extraction and classification
+        print("Running 5th iteration - Enhanced Classification with Validation...")
         
-        # Step 1: Extract unique flags with STRICT deduplication
+        # Extract unique flags
         try:
-            unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
+            unique_flags = extract_unique_flags_with_enhanced_deduplication(second_response, llm)
             print(f"\nUnique flags extracted: {len(unique_flags)}")
         except Exception as e:
             logger.error(f"Error extracting flags: {e}")
@@ -764,7 +1174,7 @@ Answer:"""
             "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
         }
         
-        # Step 2: Classify each unique flag with STRICT criteria matching
+        # Classify each unique flag with enhanced validation
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
@@ -772,10 +1182,11 @@ Answer:"""
         if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
             for i, flag in enumerate(unique_flags, 1):
                 try:
-                    classification = classify_flag_against_criteria_strict(
+                    classification = enhanced_flag_classification(
                         flag=flag,
-                        criteria_definitions=criteria_definitions,
                         previous_year_data=previous_year_data,
+                        context=context,
+                        criteria_definitions=criteria_definitions,
                         llm=llm
                     )
                     
@@ -783,24 +1194,26 @@ Answer:"""
                         'flag': flag,
                         'matched_criteria': classification['matched_criteria'],
                         'risk_level': classification['risk_level'],
-                        'reasoning': classification['reasoning']
+                        'reasoning': classification['reasoning'],
+                        'validation_type': classification.get('validation_type', 'unknown')
                     })
                     
-                    # Only add to high risk if explicitly classified as High AND criteria matched
+                    # Enhanced high-risk filtering
                     if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None'):
+                        classification['matched_criteria'] != 'None' and
+                        classification.get('validation_type') in ['quantitative_validated', 'qualitative_validated']):
                         high_risk_flags.append(flag)
                     else:
                         low_risk_flags.append(flag)
                         
                 except Exception as e:
                     logger.error(f"Error classifying flag {i}: {e}")
-                    # Always default to low risk if classification fails
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': 'None',
                         'risk_level': 'Low',
-                        'reasoning': f'Classification failed: {str(e)}'
+                        'reasoning': f'Classification failed: {str(e)}',
+                        'validation_type': 'error'
                     })
                     low_risk_flags.append(flag)
                   
@@ -812,7 +1225,7 @@ Answer:"""
             'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
         }
         
-        print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
+        print(f"\n=== ENHANCED CLASSIFICATION RESULTS ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
@@ -820,18 +1233,11 @@ Answer:"""
         if high_risk_flags:
             print(f"\n--- HIGH RISK FLAGS ---")
             for i, flag in enumerate(high_risk_flags, 1):
-                print(f"  {i}. {flag}")
+                validation_type = next((r['validation_type'] for r in classification_results if r['flag'] == flag), 'unknown')
+                print(f"  {i}. {flag} [{validation_type}]")
         else:
             print(f"\n--- HIGH RISK FLAGS ---")
             print("  No high risk flags identified")
-        
-        if low_risk_flags:
-            print(f"\n--- LOW RISK FLAGS ---")
-            for i, flag in enumerate(low_risk_flags, 1):
-                print(f"  {i}. {flag}")
-        else:
-            print(f"\n--- LOW RISK FLAGS ---")
-            print("  No low risk flags identified")
         
         # Extract company info and create Word document
         print("\nCreating Word document...")
@@ -839,7 +1245,7 @@ Answer:"""
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document with strict high risk summaries
+            # Create Word document
             word_doc_path = create_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -872,7 +1278,7 @@ Answer:"""
                 "Deduplication", 
                 "Categorization",
                 "Summary Generation",
-                "Enhanced Unique Flags Classification"
+                "Enhanced Classification with Validation"
             ],
             "response": [
                 first_response,
@@ -904,28 +1310,30 @@ def main():
     """Main function to process all PDFs in the specified folder"""
     
     # Configuration
-    pdf_folder_path = r"chemplast_pdf" 
+    pdf_folder_path = r"vedanta_pdf" 
     queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"chemplast_results_04"
+    output_folder = r"vedanta_results_enhanced"
 
-    api_key = "8496bd1da40242a29de18fe1361e498c"
+    api_key = "8496bd1d498c"
     azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1-mini"
   
+    # MANUALLY SET YOUR PREVIOUS YEAR DATA HERE FOR EACH PDF
+    # Change this string for each company/PDF you process
     previous_year_data = """
-Previous reported Debt	Mar-22	882Cr
-Current quarter ebidta	March-23 130Cr
-Previous reported asset value	Mar-22	5602Cr
-Previous reported receivable days	Mar-22	12days
-Previous reported payable days	Mar-22	189days
-Previous reported revenue	Dec-22	1189Cr
-Previous reported profitability	Dec-22	27Cr
-Previous reported operating margin	Dec-22	7%
-Previous reported cash balance	Mar-22	1229Cr
-Previous reported current liabilities	Mar-22	68Cr
-
+Previous reported Debt	Mar-23	80,329Cr
+Current quarter ebidta	March-24	11,511Cr
+Previous reported asset value	Mar-23	189,455Cr
+Previous reported receivable days	Mar-23	10days
+Previous reported payable days	Mar-23	91days
+Previous reported revenue	Dec-23	35,541Cr
+Previous reported profitability	Dec-23	2,275Cr
+Previous reported operating margin	Dec-23	25%
+Previous reported cash balance	Mar-23	9,254Cr
+Previous reported current liabilities	Mar-23	36,407Cr
 """
+
     os.makedirs(output_folder, exist_ok=True)
     
     # Process all PDFs in folder
@@ -941,74 +1349,28 @@ Previous reported current liabilities	Mar-22	68Cr
         
         start_time = time.time()
         
-        result = process_pdf_enhanced_pipeline(
-            pdf_path=pdf_file,
-            queries_csv_path=queries_csv_path,
-            previous_year_data=previous_year_data,
-            output_folder=output_folder,
-            api_key=api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=api_version,
-            deployment_name=deployment_name
-        )
-        
-        processing_time = time.time() - start_time
-        
-        if result is not None:
-            print(f"✅ Successfully processed {pdf_file} in {processing_time:.2f} seconds")
-        else:
-            print(f"❌ Failed to process {pdf_file}")
+        try:
+            # Process with enhanced pipeline using your manual string
+            result = process_pdf_enhanced_pipeline(
+                pdf_path=pdf_file,
+                queries_csv_path=queries_csv_path,
+                previous_year_data=previous_year_data,  # Your manual string here
+                output_folder=output_folder,
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version,
+                deployment_name=deployment_name
+            )
+            
+            processing_time = time.time() - start_time
+            
+            if result is not None:
+                print(f"✅ Successfully processed {pdf_file} in {processing_time:.2f} seconds")
+            else:
+                print(f"❌ Failed to process {pdf_file}")
+                
+        except Exception as e:
+            print(f"❌ Error processing {pdf_file}: {str(e)}")
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-    import os
-from pydantic import BaseModel
-from openai import AzureOpenAI
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
- 
-token_provider = get_bearer_token_provider(
-    DefaultAzureCredential(), "https://cognitiveservices.azure.com/.default"
-)
- 
-client = AzureOpenAI(
-  azure_endpoint = "https://crisil-pp-gpt.openai.azure.com",
-  api_key="8496bd1da40242a29de18fe1361e498c",
-  api_version="2025-01-01-preview"
-)
- 
- 
-class CalendarEvent(BaseModel):
-    name: str
-    date: str
-    participants: list[str]
- 
-completion = client.beta.chat.completions.parse(
-    model="gpt-4.1-mini", # replace with the model deployment name of your gpt-4o 2024-08-06 deployment
-    messages=[
-        {"role": "system", "content": "Extract the event information."},
-        {"role": "user", "content": "Alice and Bob are going to a science fair on Friday."},
-    ],
-    response_format=CalendarEvent,
-)
- 
-event = completion.choices[0].message.parsed
- 
-print(event)
-print(completion.model_dump_json(indent=2))
- 
-use pydantic like this
- 
-event.name
- 
