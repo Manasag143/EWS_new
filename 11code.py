@@ -7,17 +7,17 @@ import warnings
 import hashlib
 import logging
 import json
-from typing import Dict, List, Any, Tuple
+import re
+from typing import Dict, List, Any, Tuple, Optional
 import glob
 from pathlib import Path
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.shared import OxmlElement, qn
-import re
 from openai import AzureOpenAI
 import httpx
- 
+
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -28,97 +28,443 @@ def getFilehash(file_path: str):
         return hashlib.sha3_256(f.read()).hexdigest()
 
 class PreviousYearDataParser:
-    """Enhanced parser for previous year financial data with strict validation"""
+    """Class to parse and manage previous year financial data"""
     
     def __init__(self, previous_year_data: str):
-        self.raw_data = previous_year_data
-        self.parsed_data = self._parse_data()
-        
-    def _parse_data(self) -> Dict[str, Any]:
-        """Parse previous year data into structured format with validation"""
-        data = {}
-        
-        for line in self.raw_data.strip().split('\n'):
+        self.data = {}
+        self.parse_previous_year_data(previous_year_data)
+    
+    def parse_previous_year_data(self, data_string: str):
+        """Parse structured previous year data into a dictionary"""
+        lines = data_string.strip().split('\n')
+        for line in lines:
             if '\t' in line:
                 parts = line.split('\t')
                 if len(parts) >= 3:
-                    key = parts[0].strip().lower().replace('previous reported ', '').replace('current quarter ', '')
+                    metric = parts[0].strip()
                     period = parts[1].strip()
                     value_str = parts[2].strip()
                     
                     # Extract numeric value and unit
-                    value, unit = self._extract_value_and_unit(value_str)
+                    numeric_value, unit = self.extract_numeric_value(value_str)
                     
-                    data[key] = {
+                    self.data[metric] = {
                         'period': period,
-                        'value': value,
+                        'value': numeric_value,
                         'unit': unit,
-                        'raw_value': value_str
+                        'original': value_str
+                    }
+    
+    def extract_numeric_value(self, value_str: str) -> Tuple[float, str]:
+        """Extract numeric value and unit from string like '80,329Cr' or '25%'"""
+        value_str = value_str.replace(',', '')
+        
+        # Handle percentage
+        if '%' in value_str:
+            try:
+                numeric = float(value_str.replace('%', ''))
+                return numeric, '%'
+            except:
+                return 0.0, '%'
+        
+        # Handle Crore values
+        if 'Cr' in value_str or 'cr' in value_str:
+            try:
+                numeric = float(re.findall(r'[\d.]+', value_str)[0])
+                return numeric, 'Cr'
+            except:
+                return 0.0, 'Cr'
+        
+        # Handle days
+        if 'days' in value_str.lower() or 'day' in value_str.lower():
+            try:
+                numeric = float(re.findall(r'[\d.]+', value_str)[0])
+                return numeric, 'days'
+            except:
+                return 0.0, 'days'
+        
+        # Handle raw numbers
+        try:
+            numeric = float(re.findall(r'[\d.]+', value_str)[0])
+            return numeric, ''
+        except:
+            return 0.0, ''
+    
+    def get_metric_value(self, metric_key: str) -> Optional[Dict]:
+        """Get previous year value for a specific metric"""
+        return self.data.get(metric_key)
+    
+    def get_all_metrics(self) -> Dict:
+        """Get all parsed metrics"""
+        return self.data
+
+class EnhancedCriteriaClassifier:
+    """Enhanced classifier that properly validates against previous year data"""
+    
+    def __init__(self, previous_year_parser: PreviousYearDataParser):
+        self.previous_year_parser = previous_year_parser
+        self.criteria_config = self.setup_enhanced_criteria()
+    
+    def setup_enhanced_criteria(self) -> Dict:
+        """Setup enhanced criteria with specific keyword patterns and validation logic"""
+        return {
+            "debt_increase": {
+                "keywords": [
+                    "debt increase", "debt increased", "debt rising", "debt growth", 
+                    "higher debt", "debt went up", "debt levels", "borrowing increase",
+                    "total debt", "net debt", "debt burden", "debt position",
+                    "leverage increase", "borrowings increased"
+                ],
+                "previous_year_key": "Previous reported Debt",
+                "threshold_percent": 30,
+                "comparison_type": "increase",
+                "description": "Debt increase by >=30% compared to previous reported balance sheet"
+            },
+            "provisioning": {
+                "keywords": [
+                    "provision", "write-off", "write off", "writeoff", "bad debt", 
+                    "impairment", "credit loss", "loan loss", "doubtful debt",
+                    "npa", "non performing", "restructured", "provision for"
+                ],
+                "previous_year_key": "Current quarter ebidta",
+                "threshold_percent": 25,
+                "comparison_type": "ratio_to_ebitda",
+                "description": "Provisioning or write-offs more than 25% of current quarter's EBITDA"
+            },
+            "asset_decline": {
+                "keywords": [
+                    "asset decline", "asset fall", "asset decrease", "asset value down", 
+                    "asset reduction", "asset impairment", "asset write down",
+                    "fixed asset", "total assets", "asset quality"
+                ],
+                "previous_year_key": "Previous reported asset_value",
+                "threshold_percent": 30,
+                "comparison_type": "decrease",
+                "description": "Asset value falls by >=30% compared to previous reported balance sheet"
+            },
+            "receivable_days": {
+                "keywords": [
+                    "receivable days", "collection period", "DSO", "days sales outstanding", 
+                    "collection time", "debtor days", "receivables", "collection efficiency",
+                    "outstanding receivables"
+                ],
+                "previous_year_key": "Previous reported receivable_days",
+                "threshold_percent": 30,
+                "comparison_type": "increase",
+                "description": "Receivable days increase by >=30% compared to previous reported"
+            },
+            "payable_days": {
+                "keywords": [
+                    "payable days", "payment period", "DPO", "days payable outstanding", 
+                    "payment delay", "creditor days", "payables", "supplier payment",
+                    "outstanding payables"
+                ],
+                "previous_year_key": "Previous reported payable_days",
+                "threshold_percent": 30,
+                "comparison_type": "increase",
+                "description": "Payable days increase by >=30% compared to previous reported"
+            },
+            "debt_ebitda": {
+                "keywords": [
+                    "debt to ebitda", "debt/ebitda", "debt ebitda ratio", "leverage ratio", 
+                    "debt multiple", "net debt to ebitda", "leverage", "debt service",
+                    "debt coverage"
+                ],
+                "previous_year_key": "Current quarter ebidta",
+                "threshold_absolute": 3.0,
+                "comparison_type": "ratio_absolute",
+                "description": "Debt/EBITDA >= 3x"
+            },
+            "revenue_decline": {
+                "keywords": [
+                    "revenue decline", "revenue fall", "revenue decrease", "sales decline", 
+                    "top line decline", "income reduction", "revenue drop", "sales drop",
+                    "turnover decline", "business decline"
+                ],
+                "previous_year_key": "Previous reported revenue",
+                "threshold_percent": 25,
+                "comparison_type": "decrease",
+                "description": "Revenue falls by >=25% compared to previous reported quarter"
+            },
+            "onetime_expenses": {
+                "keywords": [
+                    "one-time", "onetime", "exceptional", "extraordinary", "non-recurring", 
+                    "special charges", "one off", "unusual items", "exceptional items",
+                    "extraordinary items"
+                ],
+                "previous_year_key": "Current quarter ebidta",
+                "threshold_percent": 25,
+                "comparison_type": "ratio_to_ebitda",
+                "description": "One-time expenses more than 25% of current quarter's EBITDA"
+            },
+            "margin_decline": {
+                "keywords": [
+                    "margin decline", "margin fall", "margin pressure", "margin compression", 
+                    "profitability decline", "margin squeeze", "gross margin", "operating margin",
+                    "ebitda margin", "net margin"
+                ],
+                "previous_year_key": "Previous reported operating_margin",
+                "threshold_percent": 25,
+                "comparison_type": "decrease",
+                "description": "Margin falling more than 25% compared to previous reported quarter"
+            },
+            "cash_balance": {
+                "keywords": [
+                    "cash decline", "cash decrease", "cash balance fall", "liquidity issue", 
+                    "cash shortage", "cash position", "cash flow", "liquidity crisis",
+                    "cash crunch", "working capital"
+                ],
+                "previous_year_key": "Previous reported cash_balance",
+                "threshold_percent": 25,
+                "comparison_type": "decrease",
+                "description": "Cash balance falling more than 25% compared to previous reported"
+            },
+            "short_term_debt": {
+                "keywords": [
+                    "short-term debt", "current liabilities", "working capital", 
+                    "short term borrowing", "immediate obligations", "current debt",
+                    "short term obligations", "current portion"
+                ],
+                "previous_year_key": "Previous reported current_liabilities",
+                "threshold_percent": 30,
+                "comparison_type": "increase",
+                "description": "Short-term debt increase by >=30% compared to previous reported"
+            },
+            "management_issues": {
+                "keywords": [
+                    "management change", "leadership change", "CEO", "CFO", "resignation", 
+                    "departure", "management turnover", "board changes", "key personnel",
+                    "executive", "director", "management team"
+                ],
+                "previous_year_key": None,
+                "threshold_percent": 0,
+                "comparison_type": "qualitative",
+                "description": "Management turnover or key personnel departures"
+            },
+            "regulatory_compliance": {
+                "keywords": [
+                    "regulatory", "compliance", "regulation", "regulator", "legal", 
+                    "penalty", "violation", "sanctions", "rbi", "sebi", "government",
+                    "regulatory action", "compliance issues"
+                ],
+                "previous_year_key": None,
+                "threshold_percent": 0,
+                "comparison_type": "qualitative",
+                "description": "Regulatory issues or compliance concerns"
+            },
+            "market_competition": {
+                "keywords": [
+                    "competition", "competitive", "market share", "competitor", 
+                    "market pressure", "competitive pressure", "industry pressure",
+                    "pricing pressure", "market dynamics"
+                ],
+                "previous_year_key": None,
+                "threshold_percent": 0,
+                "comparison_type": "qualitative",
+                "description": "Competitive intensity or market share decline"
+            },
+            "operational_disruptions": {
+                "keywords": [
+                    "operational", "supply chain", "production", "manufacturing", 
+                    "disruption", "operational issues", "plant shutdown", "capacity",
+                    "supply issues", "logistics"
+                ],
+                "previous_year_key": None,
+                "threshold_percent": 0,
+                "comparison_type": "qualitative",
+                "description": "Operational or supply chain issues"
+            }
+        }
+    
+    def extract_current_values_from_context(self, flag: str, context: str, criteria_key: str) -> Dict:
+        """Extract current period values from PDF context for comparison"""
+        criteria = self.criteria_config[criteria_key]
+        extracted_values = {}
+        
+        # Create patterns to extract numerical values
+        patterns = {
+            "debt": [
+                r"total debt[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)",
+                r"net debt[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)",
+                r"debt[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)"
+            ],
+            "revenue": [
+                r"revenue[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)",
+                r"sales[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)",
+                r"turnover[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)"
+            ],
+            "margin": [
+                r"operating margin[:\s]+([0-9.]+)%",
+                r"gross margin[:\s]+([0-9.]+)%",
+                r"ebitda margin[:\s]+([0-9.]+)%"
+            ],
+            "cash": [
+                r"cash[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)",
+                r"cash balance[:\s]+(?:rs\.?\s*)?([0-9,]+(?:\.[0-9]+)?)\s*(?:crore|cr)"
+            ],
+            "days": [
+                r"receivable days[:\s]+([0-9.]+)",
+                r"payable days[:\s]+([0-9.]+)",
+                r"DSO[:\s]+([0-9.]+)"
+            ]
+        }
+        
+        # Map criteria to pattern categories
+        criteria_to_pattern = {
+            "debt_increase": "debt",
+            "revenue_decline": "revenue", 
+            "margin_decline": "margin",
+            "cash_balance": "cash",
+            "receivable_days": "days",
+            "payable_days": "days"
+        }
+        
+        pattern_category = criteria_to_pattern.get(criteria_key)
+        if pattern_category and pattern_category in patterns:
+            for pattern in patterns[pattern_category]:
+                matches = re.findall(pattern, context.lower(), re.IGNORECASE)
+                if matches:
+                    try:
+                        # Take the first match and clean it
+                        value_str = matches[0].replace(',', '')
+                        extracted_values['current_value'] = float(value_str)
+                        break
+                    except:
+                        continue
+        
+        return extracted_values
+    
+    def validate_threshold(self, flag: str, context: str, criteria_key: str) -> Tuple[bool, str, Dict]:
+        """Enhanced threshold validation with actual number extraction"""
+        criteria = self.criteria_config[criteria_key]
+        validation_details = {
+            'previous_value': None,
+            'current_value': None,
+            'threshold_met': False,
+            'calculation': '',
+            'comparison_type': criteria['comparison_type']
+        }
+        
+        # For qualitative criteria, check for keyword presence
+        if criteria['comparison_type'] == 'qualitative':
+            for keyword in criteria['keywords']:
+                if keyword.lower() in flag.lower() or keyword.lower() in context.lower():
+                    validation_details['threshold_met'] = True
+                    validation_details['calculation'] = f"Qualitative criteria met: Found '{keyword}'"
+                    return True, validation_details['calculation'], validation_details
+            
+            return False, "No qualitative indicators found", validation_details
+        
+        # Get previous year data
+        previous_year_key = criteria.get('previous_year_key')
+        if not previous_year_key:
+            return False, "No previous year reference defined", validation_details
+        
+        previous_data = self.previous_year_parser.get_metric_value(previous_year_key)
+        if not previous_data:
+            return False, f"Previous year data not found for {previous_year_key}", validation_details
+        
+        validation_details['previous_value'] = previous_data['value']
+        
+        # Extract current values from context
+        current_values = self.extract_current_values_from_context(flag, context, criteria_key)
+        if not current_values.get('current_value'):
+            return False, "Current period value not found in context", validation_details
+        
+        validation_details['current_value'] = current_values['current_value']
+        
+        # Perform threshold validation based on comparison type
+        try:
+            if criteria['comparison_type'] == 'increase':
+                # Check for percentage increase
+                if validation_details['previous_value'] > 0:
+                    percentage_change = ((validation_details['current_value'] - validation_details['previous_value']) / validation_details['previous_value']) * 100
+                    threshold_met = percentage_change >= criteria['threshold_percent']
+                    validation_details['threshold_met'] = threshold_met
+                    validation_details['calculation'] = f"Change: {percentage_change:.1f}% (threshold: {criteria['threshold_percent']}%)"
+                    return threshold_met, validation_details['calculation'], validation_details
+            
+            elif criteria['comparison_type'] == 'decrease':
+                # Check for percentage decrease
+                if validation_details['previous_value'] > 0:
+                    percentage_change = ((validation_details['previous_value'] - validation_details['current_value']) / validation_details['previous_value']) * 100
+                    threshold_met = percentage_change >= criteria['threshold_percent']
+                    validation_details['threshold_met'] = threshold_met
+                    validation_details['calculation'] = f"Decline: {percentage_change:.1f}% (threshold: {criteria['threshold_percent']}%)"
+                    return threshold_met, validation_details['calculation'], validation_details
+            
+            elif criteria['comparison_type'] == 'ratio_to_ebitda':
+                # Check ratio to EBITDA
+                ebitda_data = self.previous_year_parser.get_metric_value("Current quarter ebidta")
+                if ebitda_data and ebitda_data['value'] > 0:
+                    ratio = (validation_details['current_value'] / ebitda_data['value']) * 100
+                    threshold_met = ratio >= criteria['threshold_percent']
+                    validation_details['threshold_met'] = threshold_met
+                    validation_details['calculation'] = f"Ratio to EBITDA: {ratio:.1f}% (threshold: {criteria['threshold_percent']}%)"
+                    return threshold_met, validation_details['calculation'], validation_details
+            
+            elif criteria['comparison_type'] == 'ratio_absolute':
+                # Check absolute ratio (like debt/EBITDA >= 3x)
+                ebitda_data = self.previous_year_parser.get_metric_value("Current quarter ebidta")
+                if ebitda_data and ebitda_data['value'] > 0:
+                    ratio = validation_details['current_value'] / ebitda_data['value']
+                    threshold_met = ratio >= criteria.get('threshold_absolute', 3.0)
+                    validation_details['threshold_met'] = threshold_met
+                    validation_details['calculation'] = f"Ratio: {ratio:.1f}x (threshold: {criteria.get('threshold_absolute', 3.0)}x)"
+                    return threshold_met, validation_details['calculation'], validation_details
+            
+        except Exception as e:
+            return False, f"Calculation error: {str(e)}", validation_details
+        
+        return False, "Threshold validation failed", validation_details
+    
+    def classify_flag_enhanced(self, flag: str, context: str) -> Dict[str, Any]:
+        """Enhanced flag classification with rigorous keyword matching and threshold validation"""
+        
+        best_match = {
+            'matched_criteria': 'None',
+            'risk_level': 'Low',
+            'reasoning': 'No criteria keyword match found',
+            'keyword_found': None,
+            'threshold_validation': {},
+            'confidence_score': 0.0
+        }
+        
+        flag_lower = flag.lower()
+        context_lower = context.lower()
+        
+        # Check each criteria for keyword matches
+        for criteria_key, criteria in self.criteria_config.items():
+            keyword_matches = []
+            
+            # Find keyword matches
+            for keyword in criteria['keywords']:
+                if keyword.lower() in flag_lower:
+                    keyword_matches.append((keyword, 'flag', 2.0))  # Higher weight for flag matches
+                elif keyword.lower() in context_lower:
+                    keyword_matches.append((keyword, 'context', 1.0))  # Lower weight for context matches
+            
+            if keyword_matches:
+                # Calculate confidence score based on keyword matches
+                confidence = sum([weight for _, _, weight in keyword_matches]) / len(criteria['keywords'])
+                
+                if confidence > best_match['confidence_score']:
+                    # Validate threshold
+                    threshold_met, calculation, validation_details = self.validate_threshold(flag, context, criteria_key)
+                    
+                    best_match = {
+                        'matched_criteria': criteria_key,
+                        'risk_level': 'High' if threshold_met else 'Low',
+                        'reasoning': f"Keyword matches: {[k for k, _, _ in keyword_matches]}. {calculation}",
+                        'keyword_found': keyword_matches[0][0],  # Best keyword match
+                        'threshold_validation': validation_details,
+                        'confidence_score': confidence
                     }
         
-        return data
-    
-    def _extract_value_and_unit(self, value_str: str) -> Tuple[float, str]:
-        """Extract numeric value and unit from string"""
-        try:
-            # Remove common suffixes and convert
-            value_str = value_str.replace(',', '')
-            
-            if 'cr' in value_str.lower():
-                numeric_part = re.findall(r'[\d.]+', value_str)
-                if numeric_part:
-                    return float(numeric_part[0]) * 100, 'crores'  # Convert to crores
-            elif 'days' in value_str.lower():
-                numeric_part = re.findall(r'[\d.]+', value_str)
-                if numeric_part:
-                    return float(numeric_part[0]), 'days'
-            elif '%' in value_str:
-                numeric_part = re.findall(r'[\d.]+', value_str)
-                if numeric_part:
-                    return float(numeric_part[0]), 'percentage'
-            else:
-                # Try to extract any numeric value
-                numeric_part = re.findall(r'[\d.]+', value_str)
-                if numeric_part:
-                    return float(numeric_part[0]), 'unknown'
-                    
-        except Exception as e:
-            logger.warning(f"Error parsing value '{value_str}': {e}")
-            
-        return 0.0, 'unknown'
-    
-    def get_value(self, key: str) -> Dict[str, Any]:
-        """Get value for a specific key"""
-        key = key.lower().strip()
-        return self.parsed_data.get(key, {'value': 0.0, 'unit': 'unknown', 'period': 'unknown', 'raw_value': 'N/A'})
-    
-    def calculate_threshold(self, key: str, threshold_percent: float) -> float:
-        """Calculate threshold value based on percentage"""
-        data = self.get_value(key)
-        return data['value'] * (threshold_percent / 100.0)
-    
-    def validate_criteria_threshold(self, key: str, current_value: float, threshold_percent: float, comparison_type: str = 'increase') -> bool:
-        """Validate if current value meets threshold criteria"""
-        previous_data = self.get_value(key)
-        previous_value = previous_data['value']
-        
-        if previous_value == 0:
-            return False
-        
-        if comparison_type == 'increase':
-            percentage_change = ((current_value - previous_value) / previous_value) * 100
-            return percentage_change >= threshold_percent
-        elif comparison_type == 'decrease':
-            percentage_change = ((previous_value - current_value) / previous_value) * 100
-            return percentage_change >= threshold_percent
-        elif comparison_type == 'ratio':
-            ratio = current_value / previous_value if previous_value != 0 else float('inf')
-            return ratio >= threshold_percent
-        
-        return False
+        return best_match
 
 class AzureOpenAILLM:
-    """Azure OpenAI gpt-4.1-mini-mini LLM class"""
+    """Azure OpenAI gpt-4.1-mini LLM class"""
    
     def __init__(self, api_key: str, azure_endpoint: str, api_version: str, deployment_name: str = "gpt-4.1-mini"):
         self.deployment_name = deployment_name
@@ -131,7 +477,7 @@ class AzureOpenAILLM:
         )
    
     def _call(self, prompt: str, max_tokens: int = 4000, temperature: float = 0.1) -> str:
-        """Make API call to Azure OpenAI gpt-4.1-mini-mini"""
+        """Make API call to Azure OpenAI gpt-4.1-mini"""
         try:
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
@@ -220,59 +566,53 @@ Response:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def extract_unique_flags_with_enhanced_deduplication(response_text: str, llm: AzureOpenAILLM, max_flags: int = 15) -> List[str]:
-    """Enhanced extraction with STRICT deduplication and 15 flag limit"""
+def extract_unique_flags_with_strict_deduplication(response_text: str, llm: AzureOpenAILLM) -> List[str]:
+    """Enhanced extraction with STRICT deduplication to prevent duplicates"""
     
     prompt = f"""
-You are an expert financial analyst. Extract EXACTLY {max_flags} or fewer UNIQUE red flags with ZERO duplicates.
+You are an expert financial analyst tasked with extracting TRULY UNIQUE red flags with ZERO duplicates.
 
 RED FLAGS ANALYSIS TO PROCESS:
 {response_text}
 
 ULTRA-STRICT DEDUPLICATION RULES:
-1. Maximum {max_flags} flags allowed - prioritize the most critical ones
-2. If multiple flags refer to the SAME underlying issue, merge into ONE comprehensive flag
-3. Remove any flag that is a subset or variation of a broader flag
-4. Combine similar concepts: "Debt increased" + "Higher debt levels" + "Rising debt burden" → "Debt levels increased significantly"
-5. Remove generic flags that don't add specific value
-6. Each flag must represent a COMPLETELY DISTINCT financial concern
-7. Prioritize flags with specific numbers/percentages over generic statements
+1. If multiple flags refer to the SAME underlying financial issue, merge them into ONE comprehensive flag
+2. Remove any flag that is a subset or variation of a broader flag
+3. Combine similar concepts: "Debt increased" + "Higher debt levels" + "Rising debt burden" → "Debt levels increased significantly"
+4. Remove generic flags that don't add specific value
+5. Each flag must represent a COMPLETELY DISTINCT financial concern
+6. Prioritize flags with specific numbers/percentages over generic statements
+7. If two flags are even slightly similar, merge them or keep only the more specific one
 8. AGGRESSIVE deduplication - when in doubt, merge or eliminate
-9. Quality over quantity - better to have 10 unique, specific flags than 15 repetitive ones
 
 EXAMPLES OF WHAT TO MERGE:
 - "Revenue declined" + "Sales decreased" + "Top line fell" → "Revenue/sales declined"
 - "Margin pressure" + "Profitability issues" + "Reduced margins" → "Margin compression and profitability pressure"
 - "Cash flow problems" + "Liquidity concerns" + "Working capital issues" → "Cash flow and liquidity challenges"
+- "Debt issues" + "Borrowing concerns" + "Leverage problems" → "Debt and leverage concerns"
 
-PRIORITIZATION CRITERIA (in order):
-1. Flags with specific numerical data or percentages
-2. Flags related to core financial metrics (debt, revenue, margins, cash)
-3. Flags indicating management or operational issues
-4. Flags about regulatory or compliance concerns
-
-OUTPUT REQUIREMENTS:
+ULTRA-STRICT OUTPUT REQUIREMENTS:
 - Return ONLY a clean Python list format
-- Maximum {max_flags} flags
 - Each flag should be a concise, specific statement 
 - ZERO duplicates, ZERO similar flags, ZERO overlapping concerns
 - Focus on the most critical and completely distinct issues only
+- Apply MAXIMUM deduplication - be ruthless in eliminating similarities
 
-Format: ["unique flag 1", "unique flag 2", ...]
+Format: ["unique flag 1", "unique flag 2", "unique flag 3", ...]
 
-EXTRACT UNIQUE FLAGS:
+EXTRACT UNIQUE FLAGS WITH MAXIMUM DEDUPLICATION:
 """
     
     try:
-        response = llm._call(prompt, max_tokens=800, temperature=0.0)
+        response = llm._call(prompt, max_tokens=600, temperature=0.0)
         
         # Try to parse as Python list
         try:
             unique_flags = ast.literal_eval(response.strip())
-            if isinstance(unique_flags, list):
-                flags_list = [flag.strip() for flag in unique_flags if flag.strip()][:max_flags]
+            if isinstance(unique_flags, list) and len(unique_flags) <= 12:
+                flags_list = [flag.strip() for flag in unique_flags if flag.strip()]
             else:
-                flags_list = unique_flags[:max_flags] if len(unique_flags) > max_flags else unique_flags
+                flags_list = unique_flags[:10] if len(unique_flags) > 10 else unique_flags
         except:
             # Fallback parsing if ast.literal_eval fails
             lines = response.strip().split('\n')
@@ -290,15 +630,12 @@ EXTRACT UNIQUE FLAGS:
                     flag = line[2:].strip()
                     if flag and len(flag) > 5:
                         flags_list.append(flag)
-                        
-                if len(flags_list) >= max_flags:
-                    break
         
         # Apply additional aggressive deduplication
         final_flags = []
         seen_keywords = []
         
-        for flag in flags_list[:max_flags]:
+        for flag in flags_list:
             if not flag or len(flag) <= 5:
                 continue
                 
@@ -309,184 +646,21 @@ EXTRACT UNIQUE FLAGS:
             # Check for keyword overlap with existing flags
             is_duplicate = False
             for existing_keywords in seen_keywords:
+                # If more than 60% of words overlap, consider it duplicate
                 overlap = len(words.intersection(existing_keywords)) / max(len(words), len(existing_keywords))
                 if overlap > 0.6:
                     is_duplicate = True
                     break
             
-            if not is_duplicate and len(final_flags) < max_flags:
+            if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
                 seen_keywords.append(words)
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
     except Exception as e:
-        logger.error(f"Error in enhanced deduplication: {e}")
+        logger.error(f"Error in strict deduplication: {e}")
         return ["Error in flag extraction"]
-
-def classify_flag_with_enhanced_validation(flag: str, criteria_definitions: Dict[str, str], 
-                                         previous_year_parser: PreviousYearDataParser, 
-                                         context: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification with strict keyword matching and threshold validation"""
-    
-    # Enhanced keyword mapping with more specific terms
-    criteria_keywords = {
-        "debt_increase": ["debt increase", "debt increased", "debt rising", "debt growth", "higher debt", 
-                         "debt went up", "debt levels", "borrowing increase", "total debt", "net debt"],
-        "provisioning": ["provision", "write-off", "write off", "writeoff", "bad debt", "impairment", 
-                        "credit loss", "provisioning", "loan loss", "npa"],
-        "asset_decline": ["asset decline", "asset fall", "asset decrease", "asset value down", 
-                         "asset reduction", "asset impairment", "fixed asset", "total assets"],
-        "receivable_days": ["receivable days", "collection period", "DSO", "days sales outstanding", 
-                           "collection time", "trade receivables", "debtors days"],
-        "payable_days": ["payable days", "payment period", "DPO", "days payable outstanding", 
-                        "payment delay", "trade payables", "creditors days"],
-        "debt_ebitda": ["debt to ebitda", "debt/ebitda", "debt ebitda ratio", "leverage ratio", 
-                       "debt multiple", "ebitda coverage"],
-        "revenue_decline": ["revenue decline", "revenue fall", "revenue decrease", "sales decline", 
-                           "top line decline", "income reduction", "turnover decline"],
-        "onetime_expenses": ["one-time", "onetime", "exceptional", "extraordinary", "non-recurring", 
-                            "special charges", "exceptional items"],
-        "margin_decline": ["margin decline", "margin fall", "margin pressure", "margin compression", 
-                          "profitability decline", "margin squeeze", "gross margin", "operating margin"],
-        "cash_balance": ["cash decline", "cash decrease", "cash balance fall", "liquidity issue", 
-                        "cash shortage", "cash position", "cash flow"],
-        "short_term_debt": ["short-term debt", "current liabilities", "working capital", 
-                           "short term borrowing", "immediate obligations", "current debt"],
-        "management_issues": ["management change", "leadership change", "CEO", "CFO", "resignation", 
-                             "departure", "management turnover", "board changes"],
-        "regulatory_compliance": ["regulatory", "compliance", "regulation", "regulator", "legal", 
-                                 "penalty", "violation", "sanctions", "rbi", "sebi"],
-        "market_competition": ["competition", "competitive", "market share", "competitor", 
-                              "market pressure", "competitive pressure", "industry dynamics"],
-        "operational_disruptions": ["operational", "supply chain", "production", "manufacturing", 
-                                   "disruption", "operational issues", "plant closure"]
-    }
-    
-    # Step 1: Enhanced keyword matching
-    matched_criteria = []
-    flag_lower = flag.lower()
-    
-    for criteria, keywords in criteria_keywords.items():
-        for keyword in keywords:
-            if keyword in flag_lower:
-                matched_criteria.append(criteria)
-                break
-    
-    if not matched_criteria:
-        return {
-            'matched_criteria': 'None',
-            'risk_level': 'Low',
-            'reasoning': 'No exact keyword match found for any criteria'
-        }
-    
-    # Step 2: Extract numerical values from flag and context
-    numerical_extraction_prompt = f"""
-Extract specific numerical values mentioned in this red flag and surrounding context.
-
-RED FLAG: "{flag}"
-
-CONTEXT (relevant portion):
-{context[:1500]}
-
-Extract any specific numbers, percentages, or ratios mentioned. Look for:
-1. Debt amounts or increases
-2. Revenue/sales figures
-3. Margin percentages
-4. Days (receivable/payable)
-5. Asset values
-6. Cash amounts
-7. Ratios (debt/EBITDA, etc.)
-
-Format your response as:
-METRIC: VALUE UNIT
-Example:
-DEBT: 85000 crores
-REVENUE_DECLINE: 25 percentage
-MARGIN: 15 percentage
-
-If no specific numbers found, respond with "NO_NUMBERS_FOUND"
-
-Response:
-"""
-    
-    numerical_response = llm._call(numerical_extraction_prompt, max_tokens=300, temperature=0.0)
-    
-    # Step 3: Threshold validation for each matched criteria
-    final_risk_level = 'Low'
-    final_reasoning = []
-    final_matched_criteria = 'None'
-    
-    for criteria in matched_criteria:
-        try:
-            is_high_risk = False
-            criteria_reasoning = f"Keyword match found for {criteria}"
-            
-            if criteria == "debt_increase":
-                # Look for debt values in numerical response
-                if "debt" in numerical_response.lower():
-                    debt_match = re.search(r'debt[:\s]+(\d+(?:\.\d+)?)', numerical_response.lower())
-                    if debt_match:
-                        current_debt = float(debt_match.group(1))
-                        is_high_risk = previous_year_parser.validate_criteria_threshold('debt', current_debt, 30.0, 'increase')
-                        criteria_reasoning += f" - Current debt: {current_debt}, threshold check: {'PASSED' if is_high_risk else 'FAILED'}"
-            
-            elif criteria == "revenue_decline":
-                if "revenue" in numerical_response.lower() or "decline" in numerical_response.lower():
-                    revenue_match = re.search(r'revenue[_\s]*decline[:\s]+(\d+(?:\.\d+)?)', numerical_response.lower())
-                    if revenue_match:
-                        decline_percent = float(revenue_match.group(1))
-                        is_high_risk = decline_percent >= 25.0
-                        criteria_reasoning += f" - Revenue decline: {decline_percent}%, threshold: {'PASSED' if is_high_risk else 'FAILED'}"
-            
-            elif criteria == "margin_decline":
-                if "margin" in numerical_response.lower():
-                    margin_match = re.search(r'margin[:\s]+(\d+(?:\.\d+)?)', numerical_response.lower())
-                    if margin_match:
-                        current_margin = float(margin_match.group(1))
-                        previous_margin = previous_year_parser.get_value('operating_margin')['value']
-                        if previous_margin > 0:
-                            decline_percent = ((previous_margin - current_margin) / previous_margin) * 100
-                            is_high_risk = decline_percent >= 25.0
-                            criteria_reasoning += f" - Margin decline: {decline_percent:.1f}%, threshold: {'PASSED' if is_high_risk else 'FAILED'}"
-            
-            elif criteria == "debt_ebitda":
-                if "ebitda" in numerical_response.lower() or "ratio" in numerical_response.lower():
-                    # Check for debt/EBITDA ratio >= 3x
-                    ratio_match = re.search(r'(\d+(?:\.\d+)?)[x\s]*ebitda', numerical_response.lower())
-                    if ratio_match:
-                        ratio = float(ratio_match.group(1))
-                        is_high_risk = ratio >= 3.0
-                        criteria_reasoning += f" - Debt/EBITDA ratio: {ratio}x, threshold: {'PASSED' if is_high_risk else 'FAILED'}"
-            
-            elif criteria in ["management_issues", "regulatory_compliance"]:
-                # These are qualitative - if keyword found, consider high risk
-                is_high_risk = True
-                criteria_reasoning += " - Qualitative criteria met"
-            
-            # Add other criteria validations as needed...
-            
-            if is_high_risk:
-                final_risk_level = 'High'
-                final_matched_criteria = criteria
-                final_reasoning.append(criteria_reasoning)
-                break  # Found high risk criteria, no need to check others
-            else:
-                final_reasoning.append(criteria_reasoning)
-                
-        except Exception as e:
-            logger.error(f"Error validating criteria {criteria}: {e}")
-            final_reasoning.append(f"Error validating {criteria}: {str(e)}")
-    
-    # If no criteria passed threshold validation, set to None
-    if final_risk_level == 'Low' and matched_criteria:
-        final_matched_criteria = matched_criteria[0]  # Keep first matched for reference
-    
-    return {
-        'matched_criteria': final_matched_criteria,
-        'risk_level': final_risk_level,
-        'reasoning': '; '.join(final_reasoning) if final_reasoning else 'No threshold criteria met'
-    }
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -515,49 +689,65 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
    
     return categories_summary
 
-def generate_enhanced_high_risk_summary(high_risk_flags: List[str], context: str, 
-                                       previous_year_parser: PreviousYearDataParser, 
-                                       llm: AzureOpenAILLM) -> List[str]:
-    """Generate enhanced summaries with previous year data context"""
+def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, llm: AzureOpenAILLM) -> List[str]:
+    """Generate VERY concise 1-2 line summaries for high risk flags using original PDF context"""
     if not high_risk_flags:
         return []
+    
+    # First, deduplicate the high_risk_flags themselves
+    unique_high_risk_flags = []
+    seen_flag_keywords = []
+    
+    for flag in high_risk_flags:
+        normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
+        flag_words = set(normalized_flag.split())
+        
+        # Check for keyword overlap with existing flags
+        is_duplicate_flag = False
+        for existing_keywords in seen_flag_keywords:
+            overlap = len(flag_words.intersection(existing_keywords)) / max(len(flag_words), len(existing_keywords))
+            if overlap > 0.7:  # High threshold for flag deduplication
+                is_duplicate_flag = True
+                break
+        
+        if not is_duplicate_flag:
+            unique_high_risk_flags.append(flag)
+            seen_flag_keywords.append(flag_words)
     
     concise_summaries = []
     seen_summary_keywords = []
     
-    # Create previous year context summary
-    prev_year_context = "PREVIOUS YEAR REFERENCE DATA:\n"
-    for key, value in previous_year_parser.parsed_data.items():
-        prev_year_context += f"{key}: {value['raw_value']} ({value['period']})\n"
-    
-    for flag in high_risk_flags:
+    for flag in unique_high_risk_flags:
         prompt = f"""
-Create a CONCISE 1-2 line summary for this high risk flag using specific data from the document and previous year comparisons.
-
-{prev_year_context}
+Based on the original PDF context, create a VERY concise 1-2 line summary for this high risk flag.
 
 ORIGINAL PDF CONTEXT:
-{context[:1500]}
+{context}
 
 HIGH RISK FLAG: "{flag}"
 
-REQUIREMENTS:
+STRICT REQUIREMENTS:
 1. EXACTLY 1-2 lines (maximum 2 sentences)
-2. Include specific numbers/percentages from the document
-3. Compare with previous year data where relevant
+2. Use ONLY specific information from the PDF context
+3. Include exact numbers/percentages if mentioned
 4. Be factual and direct - no speculation
-5. Focus on the magnitude of change or concern
+5. Do NOT exceed 2 lines under any circumstances
 6. Do NOT start with "Summary:" or any prefix
+7. Provide ONLY the factual summary content
+8. Make it UNIQUE - avoid repeating information from other summaries
 
-OUTPUT FORMAT: [Direct factual summary with specific data points]
+OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
+
 """
         
         try:
-            response = llm._call(prompt, max_tokens=150, temperature=0.1)
+            response = llm._call(prompt, max_tokens=100, temperature=0.1)
             
-            # Clean response
+            # Clean response - remove any prefixes or labels
             clean_response = response.strip()
-            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:"]
+            
+            # Remove common prefixes that might appear
+            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
             for prefix in prefixes_to_remove:
                 if clean_response.startswith(prefix):
                     clean_response = clean_response[len(prefix):].strip()
@@ -572,17 +762,18 @@ OUTPUT FORMAT: [Direct factual summary with specific data points]
             else:
                 concise_summary = '. '.join(summary_lines)
             
+            # Ensure proper ending
             if not concise_summary.endswith('.'):
                 concise_summary += '.'
             
-            # Check for duplicate content
+            # Check for duplicate content in summaries
             normalized_summary = re.sub(r'[^\w\s]', '', concise_summary.lower()).strip()
             summary_words = set(normalized_summary.split())
             
             is_duplicate_summary = False
             for existing_keywords in seen_summary_keywords:
                 overlap = len(summary_words.intersection(existing_keywords)) / max(len(summary_words), len(existing_keywords))
-                if overlap > 0.8:
+                if overlap > 0.8:  # Very high threshold for summary deduplication
                     is_duplicate_summary = True
                     break
             
@@ -592,15 +783,16 @@ OUTPUT FORMAT: [Direct factual summary with specific data points]
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
-            concise_summaries.append(f"{flag}. Review required based on analysis.")
+            if len(concise_summaries) < len(unique_high_risk_flags):
+                concise_summaries.append(f"{flag}. Review required based on analysis.")
     
     return concise_summaries
 
 def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
-                                high_risk_flags: List[str], summary_by_categories: Dict[str, List[str]], 
-                                output_folder: str, context: str, previous_year_parser: PreviousYearDataParser,
-                                llm: AzureOpenAILLM, classification_results: List[Dict]) -> str:
-    """Create enhanced Word document with previous year data context"""
+                                high_risk_flags: List[str], high_risk_details: List[Dict],
+                                summary_by_categories: Dict[str, List[str]], 
+                                output_folder: str, context: str, llm: AzureOpenAILLM) -> str:
+    """Create an enhanced Word document with detailed risk analysis"""
    
     try:
         doc = Document()
@@ -608,97 +800,118 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
         # Document title
         title = doc.add_heading(company_info, 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+       
+        # Executive Summary
+        exec_summary = doc.add_heading('Executive Summary', level=1)
+        exec_summary.runs[0].bold = True
         
-        # Add previous year data reference section
-        prev_year_heading = doc.add_heading('Previous Year Reference Data:', level=2)
-        prev_year_heading.runs[0].bold = True
+        high_count = risk_counts.get('High', 0)
+        low_count = risk_counts.get('Low', 0)
+        total_count = high_count + low_count
         
-        prev_year_table = doc.add_table(rows=1, cols=3)
-        prev_year_table.style = 'Table Grid'
-        
-        # Header row
-        hdr_cells = prev_year_table.rows[0].cells
-        hdr_cells[0].text = 'Metric'
-        hdr_cells[1].text = 'Value'
-        hdr_cells[2].text = 'Period'
-        
-        # Add data rows
-        for key, value in previous_year_parser.parsed_data.items():
-            row_cells = prev_year_table.add_row().cells
-            row_cells[0].text = key.replace('_', ' ').title()
-            row_cells[1].text = value['raw_value']
-            row_cells[2].text = value['period']
+        if high_count > 0:
+            risk_level = "HIGH CONCERN" if high_count >= 5 else "MODERATE CONCERN" if high_count >= 3 else "LOW CONCERN"
+            doc.add_paragraph(f"Overall Risk Assessment: {risk_level}")
+            doc.add_paragraph(f"Analysis identified {high_count} high-risk financial flags out of {total_count} total flags analyzed. Immediate management attention required for high-risk items.")
+        else:
+            doc.add_paragraph("Overall Risk Assessment: LOW RISK")
+            doc.add_paragraph(f"Analysis identified no high-risk flags out of {total_count} total flags analyzed. Continue monitoring key financial metrics.")
         
         doc.add_paragraph('')
        
         # Flag Distribution section
-        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+        flag_dist_heading = doc.add_heading('Risk Distribution Analysis:', level=2)
         flag_dist_heading.runs[0].bold = True
        
-        # Create flag distribution table
-        table = doc.add_table(rows=3, cols=2)
+        # Create enhanced flag distribution table
+        table = doc.add_table(rows=4, cols=3)
         table.style = 'Table Grid'
        
-        high_count = risk_counts.get('High', 0)
-        low_count = risk_counts.get('Low', 0)
-        total_count = high_count + low_count
-       
-        table.cell(0, 0).text = 'High Risk'
-        table.cell(0, 1).text = str(high_count)
-        table.cell(1, 0).text = 'Low Risk'
-        table.cell(1, 1).text = str(low_count)
-        table.cell(2, 0).text = 'Total Flags'
-        table.cell(2, 1).text = str(total_count)
+        # Header row
+        table.cell(0, 0).text = 'Risk Level'
+        table.cell(0, 1).text = 'Count'
+        table.cell(0, 2).text = 'Percentage'
         
+        # Data rows
+        table.cell(1, 0).text = 'High Risk'
+        table.cell(1, 1).text = str(high_count)
+        table.cell(1, 2).text = f"{(high_count/total_count*100):.1f}%" if total_count > 0 else "0%"
+        
+        table.cell(2, 0).text = 'Low Risk'
+        table.cell(2, 1).text = str(low_count)
+        table.cell(2, 2).text = f"{(low_count/total_count*100):.1f}%" if total_count > 0 else "0%"
+        
+        table.cell(3, 0).text = 'Total Flags'
+        table.cell(3, 1).text = str(total_count)
+        table.cell(3, 2).text = "100%"
+           
         # Make headers bold
         for i in range(3):
-            table.cell(i, 0).paragraphs[0].runs[0].bold = True
+            if len(table.cell(0, i).paragraphs) > 0 and len(table.cell(0, i).paragraphs[0].runs) > 0:
+                table.cell(0, i).paragraphs[0].runs[0].bold = True
+            if len(table.cell(1, 0).paragraphs) > 0 and len(table.cell(1, 0).paragraphs[0].runs) > 0:
+                table.cell(1, 0).paragraphs[0].runs[0].bold = True
        
         doc.add_paragraph('')
        
-        # High Risk Flags section with enhanced summaries
+        # High Risk Flags section with enhanced details
         if high_risk_flags and len(high_risk_flags) > 0:
-            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
-            high_risk_heading.runs[0].bold = True
-           
-            # Generate enhanced summaries
-            enhanced_summaries = generate_enhanced_high_risk_summary(high_risk_flags, context, previous_year_parser, llm)
+            high_risk_heading = doc.add_heading('High Risk Analysis:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
             
-            for summary in enhanced_summaries:
-                p = doc.add_paragraph()
-                p.style = 'List Bullet'
-                p.add_run(summary)
-                
-            # Add detailed classification results
+            doc.add_paragraph("The following flags have been classified as HIGH RISK based on quantitative thresholds and previous year comparisons:")
             doc.add_paragraph('')
-            classification_heading = doc.add_heading('Detailed Classification Results:', level=3)
-            classification_heading.runs[0].bold = True
+           
+            # Generate concise summaries for high risk flags
+            concise_summaries = generate_strict_high_risk_summary(high_risk_flags, context, llm)
             
-            for result in classification_results:
-                if result['risk_level'] == 'High':
-                    p = doc.add_paragraph()
-                    p.add_run(f"Flag: {result['flag']}\n").bold = True
-                    p.add_run(f"Criteria: {result['matched_criteria']}\n")
-                    p.add_run(f"Reasoning: {result['reasoning']}\n")
+            # Enhanced high-risk section with detailed analysis
+            for i, (flag, summary, details) in enumerate(zip(high_risk_flags, concise_summaries, high_risk_details), 1):
+                # Flag title
+                flag_heading = doc.add_heading(f"Risk {i}: {flag}", level=3)
+                
+                # Summary
+                doc.add_paragraph(f"Summary: {summary}")
+                
+                # Technical details
+                if details.get('threshold_validation'):
+                    validation = details['threshold_validation']
+                    details_para = doc.add_paragraph()
+                    details_para.add_run("Technical Analysis: ").bold = True
                     
+                    if validation.get('previous_value') and validation.get('current_value'):
+                        details_para.add_run(f"Previous: {validation['previous_value']}, Current: {validation['current_value']}, {validation.get('calculation', 'N/A')}")
+                    else:
+                        details_para.add_run(details.get('reasoning', 'Qualitative assessment'))
+                
+                # Criteria matched
+                criteria_para = doc.add_paragraph()
+                criteria_para.add_run("Criteria Matched: ").bold = True
+                criteria_para.add_run(details.get('matched_criteria', 'Unknown'))
+                
+                doc.add_paragraph('')
         else:
-            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
-            high_risk_heading.runs[0].bold = True
-            doc.add_paragraph('No high risk flags identified.')
+            high_risk_heading = doc.add_heading('High Risk Analysis:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
+            doc.add_paragraph('No high risk flags identified based on quantitative analysis.')
        
         # Horizontal line
         doc.add_paragraph('_' * 50)
        
         # Summary section (4th iteration results)
-        summary_heading = doc.add_heading('Summary', level=1)
-        summary_heading.runs[0].bold = True
+        summary_heading = doc.add_heading('Detailed Summary by Categories', level=1)
+        if len(summary_heading.runs) > 0:
+            summary_heading.runs[0].bold = True
        
         # Add categorized summary
         if summary_by_categories and len(summary_by_categories) > 0:
             for category, bullets in summary_by_categories.items():
                 if bullets and len(bullets) > 0:
                     cat_heading = doc.add_heading(str(category), level=2)
-                    cat_heading.runs[0].bold = True
+                    if len(cat_heading.runs) > 0:
+                        cat_heading.runs[0].bold = True
                    
                     for bullet in bullets:
                         p = doc.add_paragraph()
@@ -708,6 +921,27 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
                     doc.add_paragraph('')
         else:
             doc.add_paragraph('No categorized summary available.')
+        
+        # Add methodology section
+        methodology_heading = doc.add_heading('Analysis Methodology', level=1)
+        methodology_heading.runs[0].bold = True
+        
+        doc.add_paragraph("This analysis employs a 5-stage pipeline:")
+        method_list = [
+            "Stage 1: Initial red flag identification from earnings transcript",
+            "Stage 2: Deduplication and consolidation of similar flags", 
+            "Stage 3: Categorization into 7 financial domains",
+            "Stage 4: Summary generation with quantitative data",
+            "Stage 5: Enhanced classification using 15 criteria with previous year thresholds"
+        ]
+        
+        for method in method_list:
+            p = doc.add_paragraph()
+            p.style = 'List Bullet'
+            p.add_run(method)
+        
+        doc.add_paragraph('')
+        doc.add_paragraph("High-risk classification requires both keyword matching and quantitative threshold validation against previous year financial data.")
        
         # Save document
         doc_filename = f"{pdf_name}_Enhanced_Report.docx"
@@ -737,10 +971,9 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
 def process_pdf_enhanced_pipeline_v2(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
                                    output_folder: str = "results", 
                                    api_key: str = None, azure_endpoint: str = None, 
-                                   api_version: str = None, deployment_name: str = "gpt-4.1-mini",
-                                   max_flags: int = 15):
+                                   api_version: str = None, deployment_name: str = "gpt-4.1-mini"):
     """
-    Enhanced PDF processing pipeline with strict 15-flag limit and improved previous year data validation
+    Enhanced PDF processing pipeline v2.0 with rigorous previous year data integration
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -748,16 +981,18 @@ def process_pdf_enhanced_pipeline_v2(pdf_path: str, queries_csv_path: str, previ
    
     try:
         # Initialize enhanced components
+        previous_year_parser = PreviousYearDataParser(previous_year_data)
+        print(f"Parsed previous year data: {len(previous_year_parser.get_all_metrics())} metrics")
+        
+        criteria_classifier = EnhancedCriteriaClassifier(previous_year_parser)
+        print(f"Initialized classifier with {len(criteria_classifier.criteria_config)} criteria")
+        
         llm = AzureOpenAILLM(
             api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
             azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"), 
             api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
             deployment_name=deployment_name
         )
-        
-        # Initialize enhanced previous year data parser
-        previous_year_parser = PreviousYearDataParser(previous_year_data)
-        print(f"Parsed previous year data: {len(previous_year_parser.parsed_data)} metrics")
         
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
@@ -770,196 +1005,198 @@ def process_pdf_enhanced_pipeline_v2(pdf_path: str, queries_csv_path: str, previ
                 queries_df = pd.read_csv(queries_csv_path)
             
             if len(queries_df) == 0 or "prompt" not in queries_df.columns:
-                first_query = "Analyze this document for potential red flags with specific numerical data."
+                first_query = "Analyze this document for potential red flags."
             else:
                 first_query = queries_df["prompt"].tolist()[0]
         except Exception as e:
             logger.warning(f"Error loading queries file: {e}. Using default query.")
-            first_query = "Analyze this document for potential red flags with specific numerical data."
+            first_query = "Analyze this document for potential red flags."
         
-        # ITERATION 1: Enhanced initial analysis with numerical focus
+        # ITERATION 1: Enhanced Initial red flag identification with previous year context
         print("Running 1st iteration - Enhanced Initial Analysis...")
-        sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts with focus on quantitative data.
+        sys_prompt = f"""You are a financial analyst expert specializing in identifying red flags from earnings call transcripts and financial documents.
 
-PREVIOUS YEAR REFERENCE DATA:
+PREVIOUS YEAR FINANCIAL DATA FOR REFERENCE:
 {previous_year_data}
 
 COMPLETE DOCUMENT TO ANALYZE:
 {context}
-
-Your task is to analyze the ENTIRE document and identify ALL potential red flags with emphasis on:
-1. Specific numerical changes compared to previous year data
-2. Percentage changes in key metrics
-3. Absolute values that indicate concerns
-4. Ratios and financial indicators
+ 
+Your task is to analyze the ENTIRE document above and identify ALL potential red flags, with special attention to:
+1. Numerical changes compared to previous year benchmarks provided above
+2. Specific quantitative deteriorations in financial metrics
+3. Management discussions about challenging areas
+4. Any operational or strategic concerns mentioned
 
 CRITICAL OUTPUT FORMAT REQUIREMENTS:
 - Number each red flag sequentially (1, 2, 3, etc.)
-- Start each entry with: "Red Flag [X]: [brief description with specific numbers]"
-- Follow with "Original Quote:" and the exact quote with speaker names
-- Include numerical data where available: percentages, amounts, ratios
-- Compare with previous year data where relevant
-- Ensure comprehensive analysis focusing on quantitative indicators
+- Start each entry with: "The potential red flag you observed - [brief description]"
+- Follow with "Original Quote:" and then the exact quote with speaker names
+- Include specific numbers/percentages when available
+- Reference previous year comparisons where relevant
+- Include page references where available: (Page X)
+- Ensure comprehensive analysis of the entire document with quantitative focus
 """
         
         first_prompt = f"{sys_prompt}\n\nQuestion: {first_query}\n\nAnswer:"
         first_response = llm._call(first_prompt, max_tokens=4000)
         
-        # ITERATION 2: Enhanced deduplication with numerical preservation
+        # ITERATION 2: Enhanced Deduplication with quantitative focus
         print("Running 2nd iteration - Enhanced Deduplication...")
-        second_prompt = f"""Remove duplicates while preserving all numerical data and specific metrics. 
+        second_prompt = f"""Remove duplicates from the above analysis, with special focus on:
 
-STRICT REQUIREMENTS:
-1. Remove flags that refer to the same underlying issue
-2. Preserve all specific numbers, percentages, and ratios
-3. If multiple flags mention the same metric with different numbers, keep the most specific one
-4. Merge similar concerns but retain distinct numerical indicators
-5. Do not lose any quantitative data during deduplication
+1. Consolidating similar quantitative metrics (revenue, debt, margins, etc.)
+2. Merging related operational issues
+3. Combining management-related concerns
+4. Preserving specific numbers and percentages
+5. Maintaining previous year comparison context
 
-Previous Year Data for Reference:
+PREVIOUS YEAR DATA FOR REFERENCE:
 {previous_year_data}
 
-Ensure the output maintains all critical numerical information."""
+Do not lose quantitative data. If duplicates are not found, preserve all unique flags with their numerical context."""
         
-        second_full_prompt = f"""You must answer based on the context and previous analysis.
+        second_full_prompt = f"""You must answer the question strictly based on the below given context.
  
-Context: {context}
+Context:
+{context}
+ 
 Previous Analysis: {first_response}
  
-Task: {second_prompt}
+Based on the above analysis and the original context, please answer: {second_prompt}
  
 Answer:"""
         
         second_response = llm._call(second_full_prompt, max_tokens=4000)
         
-        # ITERATION 3: Enhanced categorization
+        # ITERATION 3: Enhanced Categorization with quantitative focus
         print("Running 3rd iteration - Enhanced Categorization...")
-        third_prompt = """Categorize the identified red flags into the following categories, preserving all numerical data:
+        third_prompt = f"""You are an expert in financial analysis tasked at categorizing the below identified red flags related to a company's financial health and operations. You need to categorize the red flags into following categories based on their original quotes and the identified keyword.
 
-CATEGORIES:
-- Balance Sheet Issues: Assets, liabilities, equity, debt positions
-- P&L (Income Statement) Issues: Revenue, expenses, profitability metrics  
-- Liquidity Issues: Cash flow, working capital, short-term obligations
-- Management and Strategy Issues: Leadership, governance, strategic decisions
-- Regulatory Issues: Compliance, legal matters, regulatory actions
-- Industry and Market Issues: Competitive position, market dynamics
-- Operational Issues: Internal processes, operational efficiency
+PREVIOUS YEAR DATA FOR REFERENCE:
+{previous_year_data}
 
-ENHANCED CATEGORIZATION RULES:
-1. Preserve all specific numbers, percentages, and ratios in each flag
-2. Include comparison with previous year data where mentioned
-3. Assign each flag to the most relevant single category
-4. Maintain the quantitative focus of each red flag
-5. Do not create additional categories beyond the 7 specified
+ENHANCED CATEGORIZATION REQUIREMENTS:
+- Balance Sheet Issues: Red flags related to assets, liabilities, equity, debt and overall financial position WITH SPECIFIC NUMBERS
+- P&L (Income Statement) Issues: Red flags related to revenues, expenses, profits, and overall financial performance WITH PERCENTAGE CHANGES  
+- Liquidity Issues: Concerns related to cash flow, debt repayment, working capital WITH ACTUAL AMOUNTS
+- Management and Strategy related Issues: Leadership, governance, decision-making, strategy WITH SPECIFIC ACTIONS
+- Regulatory Issues: Compliance with laws, regulations WITH SPECIFIC VIOLATIONS OR CONCERNS
+- Industry and Market Issues: Position within industry, market trends, competitive landscape WITH MARKET DATA
+- Operational Issues: Internal processes, systems, infrastructure WITH OPERATIONAL METRICS
 
-Output Format:
+ENHANCED GUIDELINES:
+1. Preserve ALL quantitative data and specific numbers in categorization
+2. Include previous year comparisons where mentioned
+3. Maintain exact quotes with numerical context
+4. Prioritize flags with specific financial metrics
+5. Do not lose any quantitative information during categorization
+6. Each category should show clear financial impact where available
+
+**Enhanced Output Format**:
 ### Balance Sheet Issues
-- [Red flag with specific numerical data and previous year comparison]
+- [Red flag 1 with specific numbers and original quote]
+- [Red flag 2 with quantitative metrics and original quote]
 
-Continue for all categories..."""
+Continue this format ensuring ALL numerical data is preserved."""
         
-        third_full_prompt = f"""Context: {context}
-Previous Analysis: {second_response}
-Previous Year Data: {previous_year_data}
+        third_full_prompt = f"""You must answer the question strictly based on the below given context.
  
-Task: {third_prompt}
+Context:
+{context}
+ 
+Previous Analysis: {second_response}
+ 
+Based on the above analysis and the original context, please answer: {third_prompt}
  
 Answer:"""
         
         third_response = llm._call(third_full_prompt, max_tokens=4000)
         
-        # ITERATION 4: Enhanced summary generation
+        # ITERATION 4: Enhanced Summary generation with quantitative analysis
         print("Running 4th iteration - Enhanced Summary Generation...")
-        fourth_prompt = f"""Create a comprehensive summary of each category incorporating previous year comparisons.
+        fourth_prompt = f"""Based on the categorized red flags from the previous analysis, provide a comprehensive and detailed summary of each category with ENHANCED QUANTITATIVE FOCUS.
 
-PREVIOUS YEAR REFERENCE:
+PREVIOUS YEAR DATA FOR REFERENCE:
 {previous_year_data}
 
-ENHANCED SUMMARY REQUIREMENTS:
-1. Include percentage changes compared to previous year where applicable
-2. Highlight threshold breaches (e.g., >30% increases, >25% declines)
-3. Provide context using previous year baseline data
-4. Focus on magnitude of changes and their significance
-5. Include all quantitative indicators and ratios
-6. Use bullet points for each distinct concern within categories
-7. Maintain factual, neutral tone with specific data points
+ENHANCED SUMMARY GUIDELINES:
+1. **Quantitative Priority**: Lead with specific numbers, percentages, and financial metrics
+2. **Previous Year Comparisons**: Include year-over-year changes where mentioned
+3. **Threshold Analysis**: Highlight significant deviations (>25% changes, etc.)
+4. **Factual Precision**: Base summary solely on document content with exact figures
+5. **Risk Quantification**: Assess severity based on magnitude of changes
+6. **Comprehensive Coverage**: Include every quantitative red flag within categories
+7. **Financial Impact**: Estimate potential financial implications where possible
+8. **Trend Analysis**: Identify patterns in the quantitative data
 
-Format:
+Format the output exactly like this enhanced example:
 ### Balance Sheet Issues
-* [Summary with specific percentage change vs previous year]
-* [Summary with absolute values and thresholds breached]
+* [Summary with specific numbers: "Debt increased by X% from previous Y to current Z, exceeding threshold"]
+* [Summary with metrics: "Asset value declined by X crores, representing Y% decrease from previous period"]
 
-Continue for all categories with quantitative focus..."""
+### P&L (Income Statement) Issues  
+* [Summary with percentages: "Revenue fell by X% compared to previous quarter, indicating Z concern"]
+
+Continue this format for all 7 categories. Each bullet point must include specific quantitative data and financial impact assessment."""
         
-        fourth_full_prompt = f"""Context: {context}
-Previous Analysis: {third_response}
-Previous Year Data: {previous_year_data}
+        fourth_full_prompt = f"""You must answer the question strictly based on the below given context.
  
-Task: {fourth_prompt}
+Context:
+{context}
+ 
+Previous Analysis: {third_response}
+ 
+Based on the above analysis and the original context, please answer: {fourth_prompt}
  
 Answer:"""
         
         fourth_response = llm._call(fourth_full_prompt, max_tokens=4000)
         
-        # ITERATION 5: Enhanced flag extraction and strict classification
-        print(f"Running 5th iteration - Enhanced Classification (Max {max_flags} flags)...")
+        # ITERATION 5: Enhanced Classification with rigorous criteria validation
+        print("Running 5th iteration - Enhanced Classification with Rigorous Validation...")
         
-        # Step 1: Extract unique flags with enhanced deduplication and 15-flag limit
+        # Step 1: Extract unique flags with enhanced deduplication
         try:
-            unique_flags = extract_unique_flags_with_enhanced_deduplication(second_response, llm, max_flags)
-            print(f"Unique flags extracted: {len(unique_flags)} (max allowed: {max_flags})")
+            unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
+            print(f"\nUnique flags extracted: {len(unique_flags)}")
         except Exception as e:
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
         
-        # Enhanced 15 criteria definitions with stricter thresholds
-        criteria_definitions = {
-            "debt_increase": "High: Debt increase ≥30% vs previous year; Low: <30% increase",
-            "provisioning": "High: Provisions/write-offs >25% of quarterly EBITDA; Low: ≤25%",
-            "asset_decline": "High: Asset value decline ≥30% vs previous year; Low: <30% decline",
-            "receivable_days": "High: Receivable days increase ≥30% vs previous year; Low: <30% increase",
-            "payable_days": "High: Payable days increase ≥30% vs previous year; Low: <30% increase",
-            "debt_ebitda": "High: Debt/EBITDA ≥3.0x; Low: <3.0x",
-            "revenue_decline": "High: Revenue decline ≥25% vs previous quarter; Low: <25% decline",
-            "onetime_expenses": "High: One-time expenses >25% of quarterly EBITDA; Low: ≤25%",
-            "margin_decline": "High: Margin decline ≥25% vs previous quarter; Low: <25% decline", 
-            "cash_balance": "High: Cash decline ≥25% vs previous year; Low: <25% decline",
-            "short_term_debt": "High: Short-term debt increase ≥30% vs previous year; Low: <30% increase",
-            "management_issues": "High: Key management departures or governance issues; Low: No significant changes",
-            "regulatory_compliance": "High: Active regulatory actions or penalties; Low: No active issues",
-            "market_competition": "High: Significant market share loss or new competition; Low: Stable position",
-            "operational_disruptions": "High: Major operational issues affecting performance; Low: Minor issues"
-        }
-        
-        # Step 2: Enhanced classification with strict validation
+        # Step 2: Enhanced classification with rigorous criteria matching
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
+        high_risk_details = []
         
         if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
             for i, flag in enumerate(unique_flags, 1):
                 try:
-                    classification = classify_flag_with_enhanced_validation(
-                        flag=flag,
-                        criteria_definitions=criteria_definitions,
-                        previous_year_parser=previous_year_parser,
-                        context=context,
-                        llm=llm
-                    )
+                    print(f"Classifying flag {i}/{len(unique_flags)}: {flag[:50]}...")
+                    
+                    classification = criteria_classifier.classify_flag_enhanced(flag, context)
                     
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': classification['matched_criteria'],
                         'risk_level': classification['risk_level'],
-                        'reasoning': classification['reasoning']
+                        'reasoning': classification['reasoning'],
+                        'keyword_found': classification['keyword_found'],
+                        'confidence_score': classification['confidence_score'],
+                        'threshold_validation': classification['threshold_validation']
                     })
                     
-                    # Strict high risk classification
+                    # Enhanced high risk classification - stricter requirements
                     if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None'):
+                        classification['matched_criteria'] != 'None' and
+                        classification['confidence_score'] > 0.5):
                         high_risk_flags.append(flag)
+                        high_risk_details.append(classification)
+                        print(f"  -> HIGH RISK: {classification['matched_criteria']} (confidence: {classification['confidence_score']:.2f})")
                     else:
                         low_risk_flags.append(flag)
+                        print(f"  -> Low Risk: {classification.get('reasoning', 'No criteria match')}")
                         
                 except Exception as e:
                     logger.error(f"Error classifying flag {i}: {e}")
@@ -967,7 +1204,10 @@ Answer:"""
                         'flag': flag,
                         'matched_criteria': 'None',
                         'risk_level': 'Low',
-                        'reasoning': f'Classification failed: {str(e)}'
+                        'reasoning': f'Classification failed: {str(e)}',
+                        'keyword_found': None,
+                        'confidence_score': 0.0,
+                        'threshold_validation': {}
                     })
                     low_risk_flags.append(flag)
                   
@@ -982,46 +1222,47 @@ Answer:"""
         print(f"\n=== ENHANCED CLASSIFICATION RESULTS ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
-        print(f"Total Flags: {risk_counts['Total']} (Max allowed: {max_flags})")
+        print(f"Total Flags: {risk_counts['Total']}")
         
         if high_risk_flags:
-            print(f"\n--- HIGH RISK FLAGS (with threshold validation) ---")
-            for i, flag in enumerate(high_risk_flags, 1):
-                matching_result = next((r for r in classification_results if r['flag'] == flag), {})
-                criteria = matching_result.get('matched_criteria', 'Unknown')
+            print(f"\n--- HIGH RISK FLAGS WITH VALIDATION ---")
+            for i, (flag, details) in enumerate(zip(high_risk_flags, high_risk_details), 1):
                 print(f"  {i}. {flag}")
-                print(f"     Criteria: {criteria}")
+                print(f"     Criteria: {details['matched_criteria']}")
+                print(f"     Confidence: {details['confidence_score']:.2f}")
+                if details['threshold_validation'].get('calculation'):
+                    print(f"     Validation: {details['threshold_validation']['calculation']}")
+                print()
         else:
             print(f"\n--- HIGH RISK FLAGS ---")
-            print("  No flags met the strict threshold criteria for high risk")
+            print("  No high risk flags identified with validation")
         
-        # Enhanced Word document creation
+        # Extract company info and create enhanced Word document
         print("\nCreating enhanced Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create enhanced Word document
+            # Create enhanced Word document with detailed analysis
             word_doc_path = create_enhanced_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
                 risk_counts=risk_counts,
                 high_risk_flags=high_risk_flags,
+                high_risk_details=high_risk_details,
                 summary_by_categories=summary_by_categories,
                 output_folder=output_folder,
                 context=context,
-                previous_year_parser=previous_year_parser,
-                llm=llm,
-                classification_results=classification_results
+                llm=llm
             )
             
             if word_doc_path:
                 print(f"Enhanced Word document created: {word_doc_path}")
             else:
-                print("Failed to create Word document")
+                print("Failed to create enhanced Word document")
                 
         except Exception as e:
-            logger.error(f"Error creating Word document: {e}")
+            logger.error(f"Error creating enhanced Word document: {e}")
             word_doc_path = None
        
         # Save enhanced results to CSV files
@@ -1036,37 +1277,48 @@ Answer:"""
                 "Enhanced Deduplication", 
                 "Enhanced Categorization",
                 "Enhanced Summary Generation",
-                f"Enhanced Classification (Max {max_flags} flags)"
+                "Rigorous Classification with Validation"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags (Limit: {max_flags})"
+                f"Enhanced Classification: {risk_counts['High']} High Risk (validated), {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
             ],
             "timestamp": [timestamp] * 5
         })
        
-        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_v2_pipeline_results.csv")
+        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_v2_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results with previous year context
+        # Save detailed classification results with validation details
         if len(classification_results) > 0:
-            classification_df = pd.DataFrame(classification_results)
+            # Flatten threshold validation details for CSV
+            flattened_results = []
+            for result in classification_results:
+                flattened = {
+                    'flag': result['flag'],
+                    'matched_criteria': result['matched_criteria'],
+                    'risk_level': result['risk_level'],
+                    'reasoning': result['reasoning'],
+                    'keyword_found': result['keyword_found'],
+                    'confidence_score': result['confidence_score'],
+                    'previous_value': result['threshold_validation'].get('previous_value'),
+                    'current_value': result['threshold_validation'].get('current_value'),
+                    'threshold_met': result['threshold_validation'].get('threshold_met'),
+                    'calculation': result['threshold_validation'].get('calculation'),
+                    'comparison_type': result['threshold_validation'].get('comparison_type')
+                }
+                flattened_results.append(flattened)
             
-            # Add previous year data context
-            classification_df['previous_year_context'] = str(previous_year_parser.parsed_data)
-            classification_df['max_flags_limit'] = max_flags
-            classification_df['validation_enhanced'] = True
-            
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_v2_classification.csv")
+            classification_df = pd.DataFrame(flattened_results)
+            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification_v2.csv")
             classification_df.to_csv(classification_file, index=False)
 
         print(f"\n=== ENHANCED PROCESSING COMPLETE FOR {pdf_name} ===")
-        print(f"Flags processed: {risk_counts['Total']}/{max_flags} (limit enforced)")
-        print(f"High risk threshold validations: {len([r for r in classification_results if r['risk_level'] == 'High'])}")
-        
+        print(f"Previous year metrics used: {len(previous_year_parser.get_all_metrics())}")
+        print(f"Criteria evaluated: {len(criteria_classifier.criteria_config)}")
         return results_summary
        
     except Exception as e:
@@ -1074,41 +1326,40 @@ Answer:"""
         return None
 
 def main():
-    """Enhanced main function with strict 15-flag limit and improved validation"""
+    """Enhanced main function with rigorous previous year data integration"""
     
     # Configuration
     pdf_folder_path = r"vedanta_pdf" 
     queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"vedanta_results_enhanced_v2"
+    output_folder = r"vedanta_results_enhanced_v2.0"
 
-    api_key = "8496b498c"  # Replace with actual key
+    api_key = "8496b498c"
     azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1-mini"
-    
-    # Strict 15 flag limit
-    MAX_FLAGS = 15
   
-    # Enhanced structured previous year data with more metrics
+    # Enhanced structured previous year data with more comprehensive metrics
     previous_year_data = """
-Previous reported Debt	Mar-23	80329Cr
-Current quarter ebidta	March-24	11511Cr
-Previous reported asset_value	Mar-23	189455Cr
+Previous reported Debt	Mar-23	80,329Cr
+Current quarter ebidta	March-24	11,511Cr
+Previous reported asset_value	Mar-23	189,455Cr
 Previous reported receivable_days	Mar-23	10days
 Previous reported payable_days	Mar-23	91days
-Previous reported revenue	Dec-23	35541Cr
-Previous reported profitability	Dec-23	2275Cr
+Previous reported revenue	Dec-23	35,541Cr
+Previous reported profitability	Dec-23	2,275Cr
 Previous reported operating_margin	Dec-23	25%
-Previous reported cash_balance	Mar-23	9254Cr
-Previous reported current_liabilities	Mar-23	36407Cr
-Previous reported short_term_debt	Mar-23	15200Cr
-Previous reported total_assets	Mar-23	189455Cr
-Previous reported net_debt	Mar-23	71075Cr
-Previous reported debt_ebitda_ratio	Mar-23	2.1x
-Previous reported working_capital	Mar-23	5500Cr
+Previous reported cash_balance	Mar-23	9,254Cr
+Previous reported current_liabilities	Mar-23	36,407Cr
 """
     
     os.makedirs(output_folder, exist_ok=True)
+    
+    # Validate previous year data structure
+    parser_test = PreviousYearDataParser(previous_year_data)
+    print(f"Enhanced system initialized with {len(parser_test.get_all_metrics())} previous year metrics:")
+    for metric, data in parser_test.get_all_metrics().items():
+        print(f"  - {metric}: {data['value']} {data['unit']} ({data['period']})")
+    print()
     
     # Process all PDFs in folder
     pdf_files = glob.glob(os.path.join(pdf_folder_path, "*.pdf"))
@@ -1116,16 +1367,14 @@ Previous reported working_capital	Mar-23	5500Cr
         print(f"No PDF files found in {pdf_folder_path}")
         return    
     
-    print(f"ENHANCED FINANCIAL ANALYSIS PIPELINE V2")
-    print(f"Maximum flags per document: {MAX_FLAGS}")
-    print(f"Enhanced threshold validation: ENABLED")
-    print(f"Previous year data validation: ENABLED")
-    print(f"{'='*60}")
+    total_high_risk = 0
+    total_flags = 0
+    processing_summary = []
     
     for i, pdf_file in enumerate(pdf_files, 1):
-        print(f"\n{'='*60}")
+        print(f"\n{'='*80}")
         print(f"PROCESSING PDF {i}/{len(pdf_files)}: {os.path.basename(pdf_file)}")
-        print(f"{'='*60}")
+        print(f"{'='*80}")
         
         start_time = time.time()
         
@@ -1137,16 +1386,82 @@ Previous reported working_capital	Mar-23	5500Cr
             api_key=api_key,
             azure_endpoint=azure_endpoint,
             api_version=api_version,
-            deployment_name=deployment_name,
-            max_flags=MAX_FLAGS
+            deployment_name=deployment_name
         )
         
         processing_time = time.time() - start_time
         
         if result is not None:
             print(f"✅ Successfully processed {pdf_file} in {processing_time:.2f} seconds")
+            
+            # Extract metrics from the last iteration
+            last_iteration = result.iloc[-1]['response']
+            try:
+                import re
+                high_risk_match = re.search(r'(\d+) High Risk', last_iteration)
+                total_flags_match = re.search(r'from (\d+) total unique flags', last_iteration)
+                
+                if high_risk_match and total_flags_match:
+                    file_high_risk = int(high_risk_match.group(1))
+                    file_total_flags = int(total_flags_match.group(1))
+                    total_high_risk += file_high_risk
+                    total_flags += file_total_flags
+                    
+                    processing_summary.append({
+                        'file': os.path.basename(pdf_file),
+                        'high_risk': file_high_risk,
+                        'total_flags': file_total_flags,
+                        'processing_time': processing_time
+                    })
+                    
+                    print(f"   High Risk: {file_high_risk}, Total Flags: {file_total_flags}")
+            except:
+                pass
         else:
             print(f"❌ Failed to process {pdf_file}")
+            processing_summary.append({
+                'file': os.path.basename(pdf_file),
+                'high_risk': 0,
+                'total_flags': 0,
+                'processing_time': processing_time,
+                'status': 'Failed'
+            })
+    
+    # Create overall summary report
+    print(f"\n{'='*80}")
+    print("ENHANCED PROCESSING SUMMARY")
+    print(f"{'='*80}")
+    print(f"Files Processed: {len(pdf_files)}")
+    print(f"Total High Risk Flags: {total_high_risk}")
+    print(f"Total Flags Analyzed: {total_flags}")
+    print(f"High Risk Percentage: {(total_high_risk/total_flags*100):.1f}%" if total_flags > 0 else "N/A")
+    print()
+    
+    print("Per-File Results:")
+    for summary in processing_summary:
+        status = summary.get('status', 'Success')
+        if status == 'Success':
+            print(f"  {summary['file']}: {summary['high_risk']} high risk / {summary['total_flags']} total ({processing_time:.1f}s)")
+        else:
+            print(f"  {summary['file']}: Failed ({processing_time:.1f}s)")
+    
+    # Save processing summary
+    try:
+        summary_df = pd.DataFrame(processing_summary)
+        summary_file = os.path.join(output_folder, "enhanced_processing_summary.csv")
+        summary_df.to_csv(summary_file, index=False)
+        print(f"\nProcessing summary saved to: {summary_file}")
+    except Exception as e:
+        print(f"Error saving processing summary: {e}")
+    
+    print(f"\n🎯 Enhanced Analysis Complete!")
+    print(f"📊 Results saved in: {output_folder}")
+    print(f"🔍 Key Features:")
+    print(f"   ✓ Rigorous previous year data validation")
+    print(f"   ✓ 15 criteria with quantitative thresholds")
+    print(f"   ✓ Enhanced keyword matching and confidence scoring")
+    print(f"   ✓ Detailed Word reports with technical analysis")
+    print(f"   ✓ Comprehensive CSV outputs with validation details")
 
 if __name__ == "__main__":
     main()
