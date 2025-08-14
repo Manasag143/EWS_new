@@ -255,12 +255,149 @@ Extract unique flags:"""
     except Exception as e:
         logger.error(f"Error in strict deduplication: {e}")
         return ["Error in flag extraction"]
-
-def classify_flag_with_percentage_calculation(flag: str, criteria_definitions: Dict[str, str], 
-                                            previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification with percentage calculation, keyword fallback, and default to Low risk"""
     
-    # Simple keyword mapping for fallback and validation
+def extract_current_values_from_context(context: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Extract current financial values from PDF context"""
+    
+    prompt = f"""<role>
+You are an expert financial data extractor specializing in identifying specific financial metrics from earnings transcripts and financial documents.
+</role>
+
+<instruction>
+Extract ONLY the following specific financial values if mentioned in the document. If a value is not found, respond with "Not Present".
+
+EXTRACT THESE VALUES:
+1. Current Debt amount
+2. Current EBITDA amount  
+3. Current Asset Value
+4. Current Receivable Days
+5. Current Payable Days
+6. Current Revenue amount
+7. Current Profit Before Tax
+8. Current Operating Margin percentage
+9. Current Cash Balance
+10. Current Liabilities amount
+
+OUTPUT FORMAT:
+Provide ONLY in this exact format:
+Current Debt: [amount or "Not Present"]
+Current EBITDA: [amount or "Not Present"]
+Current Asset Value: [amount or "Not Present"]
+Current Receivable Days: [days or "Not Present"]
+Current Payable Days: [days or "Not Present"]
+Current Revenue: [amount or "Not Present"]
+Current Profit Before Tax: [amount or "Not Present"]
+Current Operating Margin: [percentage or "Not Present"]
+Current Cash Balance: [amount or "Not Present"]
+Current Liabilities: [amount or "Not Present"]
+
+Be precise and extract exact values with units (Cr, days, %) as mentioned in the document.
+</instruction>
+
+<context>
+{context}
+</context>
+
+Extract current values:"""
+    
+    try:
+        response = llm._call(prompt, max_tokens=300, temperature=0.0)
+        
+        # Parse the response into a dictionary
+        current_values = {}
+        lines = response.strip().split('\n')
+        
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().replace('Current ', '').lower().replace(' ', '_')
+                value = value.strip()
+                current_values[key] = value
+        
+        return current_values
+        
+    except Exception as e:
+        logger.error(f"Error extracting current values: {e}")
+        return {}
+
+def compare_with_previous_year(previous_year_data: Dict[str, Any], context: str, llm: AzureOpenAILLM):
+    """Compare current values with previous year data and print comparison results"""
+    
+    print(f"\n{'='*60}")
+    print(f"PREVIOUS YEAR DATA COMPARISON")
+    print(f"{'='*60}")
+    
+    # Extract current values from context
+    current_values = extract_current_values_from_context(context, llm)
+    
+    # Define mappings between previous year keys and current value keys
+    comparison_mapping = {
+        'debt': ('debt', 'Cr'),
+        'ebitda': ('ebitda', 'Cr'),
+        'asset_value': ('asset_value', 'Cr'),
+        'receivable_days': ('receivable_days', 'days'),
+        'payable_days': ('payable_days', 'days'),
+        'revenue': ('revenue', 'Cr'),
+        'profit_before_tax': ('profit_before_tax', 'Cr'),
+        'operating_margin': ('operating_margin', '%'),
+        'cash_balance': ('cash_balance', 'Cr'),
+        'current_liabilities': ('liabilities', 'Cr')
+    }
+    
+    for prev_key, prev_data in previous_year_data.items():
+        if prev_key in comparison_mapping:
+            current_key, unit = comparison_mapping[prev_key]
+            prev_value = prev_data['value']
+            prev_period = prev_data['period']
+            
+            current_value = current_values.get(current_key, "Not Present")
+            
+            print(f"\n{prev_key.upper().replace('_', ' ')}:")
+            print(f"  Previous ({prev_period}): {prev_value}{unit}")
+            print(f"  Current: {current_value}")
+            
+            if current_value != "Not Present" and current_value.lower() != "not present":
+                # Try to extract numeric values for comparison
+                try:
+                    # Extract numbers from strings (handle Cr, %, days)
+                    prev_num = float(re.sub(r'[^\d.]', '', str(prev_value)))
+                    curr_num = float(re.sub(r'[^\d.]', '', str(current_value)))
+                    
+                    if prev_num > 0:
+                        change_pct = ((curr_num - prev_num) / prev_num) * 100
+                        change_direction = "increase" if change_pct > 0 else "decrease"
+                        print(f"  Change: {abs(change_pct):.1f}% {change_direction}")
+                        
+                        # Apply risk assessment based on criteria
+                        risk_level = "Low Risk"
+                        if prev_key in ['debt', 'asset_value', 'receivable_days', 'payable_days', 'current_liabilities']:
+                            if abs(change_pct) >= 30:
+                                risk_level = "High Risk"
+                        elif prev_key in ['revenue', 'profit_before_tax', 'operating_margin']:
+                            if change_pct <= -25:  # 25% or more decline
+                                risk_level = "High Risk"
+                        elif prev_key in ['cash_balance']:
+                            if change_pct <= -25:  # 25% or more decline
+                                risk_level = "High Risk"
+                        elif prev_key == 'ebitda':
+                            # For EBITDA, significant decline is concerning
+                            if change_pct <= -25:
+                                risk_level = "High Risk"
+                        
+                        print(f"  Risk Assessment: {risk_level}")
+                    else:
+                        print(f"  Change: Cannot calculate (previous value is 0)")
+                        
+                except (ValueError, TypeError):
+                    print(f"  Change: Cannot calculate (non-numeric values)")
+            else:
+                print(f"  Change: Cannot calculate (current data not available)")
+
+def classify_flag_against_criteria_simple(flag: str, criteria_definitions: Dict[str, str], 
+                                         previous_year_data: Dict[str, Any], llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Simplified classification with clear, concise prompt"""
+    
+    # Simple keyword mapping - just the most important ones
     criteria_keywords = {
         "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase"],
         "provisioning": ["provision", "write-off", "bad debt", "impairment"],
@@ -279,133 +416,65 @@ def classify_flag_with_percentage_calculation(flag: str, criteria_definitions: D
         "operational_disruptions": ["operational", "supply chain", "production issues"]
     }
     
-    prompt = f"""<role>
-You are an expert financial analyst specializing in quantitative risk assessment with deep knowledge of financial metrics and percentage calculations.
-</role>
+    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
+    
+    # Convert previous_year_data dict to string format for LLM
+    prev_data_str = ""
+    for key, data in previous_year_data.items():
+        prev_data_str += f"Previous {key.replace('_', ' ')}: {data['value']}{data.get('unit', '')} ({data['period']})\n"
+    
+    # Much simpler prompt
+    prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
 
-<system_prompt>
-You excel at extracting numerical data from financial documents, performing accurate percentage calculations, and classifying risks based on predefined thresholds.
-</system_prompt>
+RED FLAG: "{flag}"
 
-<instruction>
-Analyze the red flag against the criteria and calculate exact percentages where applicable.
+CRITERIA LIST:
+{criteria_list}
 
-RED FLAG TO ANALYZE: "{flag}"
+RULES:
+1. Find which criteria this flag belongs to based on keywords
+2. Check if it meets the High/Low threshold using previous year data
+3. If no clear match, say "None"
 
-CRITERIA DEFINITIONS:
-{chr(10).join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])}
+PREVIOUS YEAR DATA:
+{prev_data_str}
 
-PREVIOUS YEAR BASELINE DATA:
-{previous_year_data}
-
-ANALYSIS REQUIREMENTS:
-1. Extract current period values mentioned in the flag
-2. Match with corresponding previous year baseline values
-3. Calculate exact percentage change: ((Current - Previous) / Previous) × 100
-4. Determine risk level based on criteria thresholds
-5. If no numerical data can be extracted, still try to match criteria and default to Low risk
-
-CALCULATION EXAMPLES:
-- Debt increase from 4486Cr to 6000Cr = ((6000-4486)/4486)×100 = 33.7% increase → High Risk (≥30%)
-- Revenue decline from 5535Cr to 4200Cr = ((4200-5535)/5535)×100 = -24.1% decline → Low Risk (<25%)
-
-OUTPUT FORMAT:
+Give answer in this format:
 Matched_Criteria: [criteria name or "None"]
-Previous_Value: [previous year value with units or "Not Found"]
-Current_Value: [current value with units or "Not Found"] 
-Percentage_Change: [exact percentage with + or - sign or "Not Found"]
 Risk_Level: [High or Low]
-Reasoning: [brief explanation of calculation and threshold comparison]
-
-CRITICAL REQUIREMENTS:
-- Always provide either High or Low risk level (never "Not Found")
-- Provide exact percentage calculations where possible
-- Show clear mathematical reasoning
-- Match flag content with appropriate criteria
-- Default to Low risk when calculations aren't possible
-</instruction>
-
-<context>
-DOCUMENT CONTEXT FOR VALUE EXTRACTION:
-Analyze the flag content to extract current period financial values and compare with baseline data provided above.
-</context>
-
-Provide detailed percentage-based classification:"""
+Reasoning: [one line explanation]"""
     
     try:
-        response = llm._call(prompt, max_tokens=300, temperature=0.0)
+        response = llm._call(prompt, max_tokens=200, temperature=0.0)
         
-        # Parse response
-        result = {
-            'matched_criteria': 'None',
-            'previous_value': 'Not Found',
-            'current_value': 'Not Found',
-            'percentage_change': 'Not Found',
-            'risk_level': 'Low',  # Default to Low instead of Not Found
-            'reasoning': 'No analysis available'
-        }
+        # Simple parsing
+        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found'}
         
         lines = response.strip().split('\n')
         for line in lines:
             if 'Matched_Criteria:' in line:
                 result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Previous_Value:' in line:
-                result['previous_value'] = line.split(':', 1)[1].strip()
-            elif 'Current_Value:' in line:
-                result['current_value'] = line.split(':', 1)[1].strip()
-            elif 'Percentage_Change:' in line:
-                result['percentage_change'] = line.split(':', 1)[1].strip()
             elif 'Risk_Level:' in line:
                 result['risk_level'] = line.split(':', 1)[1].strip()
             elif 'Reasoning:' in line:
                 result['reasoning'] = line.split(':', 1)[1].strip()
         
-        # KEYWORD FALLBACK: If LLM didn't match criteria, use keyword matching
-        if result['matched_criteria'] == 'None':
-            flag_lower = flag.lower()
-            for criteria_name, keywords in criteria_keywords.items():
-                for keyword in keywords:
-                    if keyword.lower() in flag_lower:
-                        result['matched_criteria'] = criteria_name
-                        # Simple severity check based on keywords
-                        if any(word in flag_lower for word in ['significant', 'major', 'increased', 'declined', 'higher', 'substantial', 'critical']):
-                            result['risk_level'] = 'High'
-                        else:
-                            result['risk_level'] = 'Low'
-                        result['reasoning'] = f'Keyword match: {keyword} found in flag'
-                        break
-                if result['matched_criteria'] != 'None':
-                    break
-        
-        # Ensure risk_level is always High or Low (never Not Found)
-        if result['risk_level'] not in ['High', 'Low']:
-            result['risk_level'] = 'Low'
-        
-        return result
-        
-    except Exception as e:
-        # Even in error case, use keyword fallback
+        # Simple fallback check
         flag_lower = flag.lower()
         for criteria_name, keywords in criteria_keywords.items():
             for keyword in keywords:
                 if keyword.lower() in flag_lower:
-                    return {
-                        'matched_criteria': criteria_name,
-                        'previous_value': 'Not Found',
-                        'current_value': 'Not Found',
-                        'percentage_change': 'Not Found',
-                        'risk_level': 'Low',  # Default to Low
-                        'reasoning': f'Keyword fallback due to error: {keyword} found'
-                    }
+                    if result['matched_criteria'] == 'None':
+                        result['matched_criteria'] = criteria_name
+                        # Simple severity check
+                        if any(word in flag_lower for word in ['significant', 'major', 'increased', 'declined', 'higher']):
+                            result['risk_level'] = 'High'
+                        break
         
-        return {
-            'matched_criteria': 'None',
-            'previous_value': 'Not Found',
-            'current_value': 'Not Found',
-            'percentage_change': 'Not Found',
-            'risk_level': 'Low',  # Always default to Low
-            'reasoning': f'Error: {str(e)}'
-        }
+        return result
+        
+    except Exception as e:
+        return {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': f'Error: {str(e)}'}
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -672,12 +741,12 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             logger.error(f"Error creating fallback document: {e2}")
             return None
 
-def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: Dict[str, Any], 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Process PDF through enhanced 5-iteration pipeline with percentage calculations and detailed output
+    Process PDF through enhanced 5-iteration pipeline with structured prompts and enhanced classification
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -695,6 +764,9 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
         
+        # Add comparison output here
+        compare_with_previous_year(previous_year_data, context, llm)
+        
         # Load first query from CSV/Excel
         try:
             if queries_csv_path.endswith('.xlsx'):
@@ -711,6 +783,7 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
             first_query = "Analyze this document for potential red flags."
         
         # ITERATION 1: Initial red flag identification with structured prompt
+        print("Running 1st iteration - Initial Analysis...")
         first_prompt = f"""<role>
 You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
 </role>
@@ -750,6 +823,7 @@ Provide comprehensive red flag analysis:"""
         first_response = llm._call(first_prompt, max_tokens=4000)
         
         # ITERATION 2: Deduplication (keeping original as requested)
+        print("Running 2nd iteration - Deduplication...")
         second_prompt = "Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. Do not lose data if duplicates are not found."
         
         second_full_prompt = f"""You must answer the question strictly based on the below given context.
@@ -766,6 +840,7 @@ Answer:"""
         second_response = llm._call(second_full_prompt, max_tokens=4000)
         
         # ITERATION 3: Categorization with structured prompt
+        print("Running 3rd iteration - Categorization...")
         third_prompt = f"""<role>
 You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
 </role>
@@ -819,6 +894,7 @@ Provide categorized analysis:"""
         third_response = llm._call(third_prompt, max_tokens=4000)
         
         # ITERATION 4: Summary generation with structured prompt
+        print("Running 4th iteration - Summary Generation...")
         fourth_prompt = f"""<role>
 You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
 </role>
@@ -867,10 +943,12 @@ Provide factual category summaries:"""
         fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
         # ITERATION 5: Extract unique flags with ENHANCED DEDUPLICATION and classify
+        print("Running 5th iteration - Enhanced Unique Flags Classification...")
         
         # Step 1: Extract unique flags with STRICT deduplication
         try:
             unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
+            print(f"\nUnique flags extracted: {len(unique_flags)}")
         except Exception as e:
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
@@ -891,10 +969,11 @@ Provide factual category summaries:"""
             "management_issues": "High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy; Low: If there is a no clear concern for the company basis the discussion on the management or strategy related issues",
             "regulatory_compliance": "High: If found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: If there is a no clear concern for the company basis the discussion on the regulatory issues",
             "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
+            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues",
+            "others": "High: Other issues not explicitly covered above that could impact the business; compare with company's current quarter EBITDA to decide significance; Low: No other issues or concerns"
         }
         
-        # Step 2: Classify each unique flag with ENHANCED percentage calculation
+        # Step 2: Classify each unique flag with ENHANCED criteria matching
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
@@ -902,7 +981,7 @@ Provide factual category summaries:"""
         if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
             for i, flag in enumerate(unique_flags, 1):
                 try:
-                    classification = classify_flag_with_percentage_calculation(
+                    classification = classify_flag_against_criteria_simple(
                         flag=flag,
                         criteria_definitions=criteria_definitions,
                         previous_year_data=previous_year_data, 
@@ -912,28 +991,24 @@ Provide factual category summaries:"""
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': classification['matched_criteria'],
-                        'previous_value': classification['previous_value'],
-                        'current_value': classification['current_value'],
-                        'percentage_change': classification['percentage_change'],
                         'risk_level': classification['risk_level'],
                         'reasoning': classification['reasoning']
                     })
                     
-                    # Add to appropriate risk category - only High or Low now
-                    if classification['risk_level'].lower() == 'high':
+                    # Add to appropriate risk category
+                    if (classification['risk_level'].lower() == 'high' and 
+                        classification['matched_criteria'] != 'None'):
                         high_risk_flags.append(flag)
-                    else:  # Everything else defaults to Low
+                    else:
                         low_risk_flags.append(flag)
                         
                 except Exception as e:
                     logger.error(f"Error classifying flag {i}: {e}")
+                    # Always default to low risk if classification fails
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': 'None',
-                        'previous_value': 'Not Found',
-                        'current_value': 'Not Found',
-                        'percentage_change': 'Not Found',
-                        'risk_level': 'Low',  # Default to Low even in error
+                        'risk_level': 'Low',
                         'reasoning': f'Classification failed: {str(e)}'
                     })
                     low_risk_flags.append(flag)
@@ -946,30 +1021,34 @@ Provide factual category summaries:"""
             'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
         }
         
-        # Display results with percentage calculations
-        print(f"\n=== FINAL CLASSIFICATION RESULTS WITH PERCENTAGES ===")
+        print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
         
-        # Display detailed results with percentages
-        if classification_results:
-            print(f"\n=== DETAILED CLASSIFICATION WITH PERCENTAGES ===")
-            for i, result in enumerate(classification_results, 1):
-                print(f"\n{i}. FLAG: {result['flag']}")
-                print(f"   CRITERIA: {result['matched_criteria']}")
-                print(f"   PREVIOUS: {result['previous_value']}")
-                print(f"   CURRENT: {result['current_value']}")
-                print(f"   CHANGE: {result['percentage_change']}")
-                print(f"   RISK: {result['risk_level']}")
-                print(f"   REASONING: {result['reasoning']}")
+        if high_risk_flags:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            for i, flag in enumerate(high_risk_flags, 1):
+                print(f"  {i}. {flag}")
+        else:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            print("  No high risk flags identified")
+        
+        if low_risk_flags:
+            print(f"\n--- LOW RISK FLAGS ---")
+            for i, flag in enumerate(low_risk_flags, 1):
+                print(f"  {i}. {flag}")
+        else:
+            print(f"\n--- LOW RISK FLAGS ---")
+            print("  No low risk flags identified")
         
         # Extract company info and create Word document
+        print("\nCreating Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document with updated risk counts
+            # Create Word document with strict high risk summaries
             word_doc_path = create_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -981,6 +1060,11 @@ Provide factual category summaries:"""
                 llm=llm
             )
             
+            if word_doc_path:
+                print(f"Word document created: {word_doc_path}")
+            else:
+                print("Failed to create Word document")
+                
         except Exception as e:
             logger.error(f"Error creating Word document: {e}")
             word_doc_path = None
@@ -997,14 +1081,14 @@ Provide factual category summaries:"""
                 "Deduplication", 
                 "Categorization",
                 "Summary Generation",
-                "Enhanced Percentage Classification"
+                "Enhanced Unique Flags Classification"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Classification with Percentages: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk from {risk_counts['Total']} total unique flags"
+                f"Enhanced Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
             ],
             "timestamp": [timestamp] * 5
         })
@@ -1012,12 +1096,13 @@ Provide factual category summaries:"""
         results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results with percentages
+        # Save detailed classification results
         if len(classification_results) > 0:
             classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification_with_percentages.csv")
+            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification.csv")
             classification_df.to_csv(classification_file, index=False)
 
+        print(f"\n=== PROCESSING COMPLETE FOR {pdf_name} ===")
         return results_summary
        
     except Exception as e:
@@ -1037,20 +1122,20 @@ def main():
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1"
   
-    # Enhanced structured previous year data
-    previous_year_data = """
-Previous reported Debt	Mar-24	4486Cr
-Current quarter ebidta	Sept-24	412Cr
-Previous reported asset value	Mar-24	12818Cr
-Previous reported receivable days	Mar-24	6days
-Previous reported payable days	Mar-24	45days
-Previous reported revenue	June-24	5535Cr
-Previous reported profit before tax	June-24	237Cr
-Previous reported operating margin	June-24	7%
-Previous reported cash balance	Mar-24	975Cr
-Previous reported current liabilities	Mar-24	3317Cr
-
-"""
+    # Enhanced structured previous year data - converted to dictionary format
+    previous_year_data = {
+        'debt': {'value': 4486, 'period': 'Mar-24', 'unit': 'Cr'},
+        'ebitda': {'value': 412, 'period': 'Sept-24', 'unit': 'Cr'},
+        'asset_value': {'value': 12818, 'period': 'Mar-24', 'unit': 'Cr'},
+        'receivable_days': {'value': 6, 'period': 'Mar-24', 'unit': 'days'},
+        'payable_days': {'value': 45, 'period': 'Mar-24', 'unit': 'days'},
+        'revenue': {'value': 5535, 'period': 'June-24', 'unit': 'Cr'},
+        'profit_before_tax': {'value': 237, 'period': 'June-24', 'unit': 'Cr'},
+        'operating_margin': {'value': 7, 'period': 'June-24', 'unit': '%'},
+        'cash_balance': {'value': 975, 'period': 'Mar-24', 'unit': 'Cr'},
+        'current_liabilities': {'value': 3317, 'period': 'Mar-24', 'unit': 'Cr'}
+    }
+    
     os.makedirs(output_folder, exist_ok=True)
     
     # Process all PDFs in folder
