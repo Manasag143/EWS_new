@@ -283,10 +283,43 @@ def extract_numbers_from_flag(flag: str) -> List[float]:
     numbers = re.findall(r'\d+(?:\.\d+)?', flag)
     return [float(num) for num in numbers]
 
-def perform_calculation_analysis(flag: str, criteria_name: str, previous_data: Dict[str, float]) -> Dict[str, Any]:
-    """Perform actual calculations and return results"""
+def get_criteria_keywords():
+    """Get keyword mappings for criteria matching"""
+    return {
+        "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase", "debt rise", "leverage increase"],
+        "provisioning": ["provision", "write-off", "bad debt", "impairment", "writeoff", "provisions"],
+        "asset_decline": ["asset decline", "asset fall", "asset decrease", "asset value decline", "asset reduction"],
+        "receivable_days": ["receivable days", "collection period", "DSO", "debtor days", "collection days"],
+        "payable_days": ["payable days", "payment period", "DPO", "creditor days", "payment days"],
+        "debt_ebitda": ["debt to ebitda", "leverage ratio", "debt multiple", "debt ebitda", "leverage"],
+        "revenue_decline": ["revenue decline", "sales decline", "revenue fall", "top line decline", "revenue drop"],
+        "profit_before_tax_decline": ["profit before tax", "PBT decline", "pre-tax profit", "profit fall"],
+        "profit_after_tax_decline": ["profit after tax", "PAT decline", "net profit", "bottom line"],
+        "ebidta_decline": ["ebitda decline", "ebitda fall", "ebitda drop", "operating profit"],
+        "margin_decline": ["margin decline", "margin pressure", "profitability decline", "margin compression"],
+        "cash_balance": ["cash decline", "liquidity issue", "cash shortage", "cash position", "cash flow"],
+        "short_term_borrowings": ["short-term debt", "current liabilities", "short term borrowing"],
+        "receivables": ["receivables increase", "debtors increase", "trade receivables"],
+        "payables": ["payables increase", "creditors increase", "trade payables"],
+        "one-time_expenses": ["one-time", "exceptional", "non-recurring", "extraordinary"],
+        "impairment": ["impairment", "writedown", "asset impairment", "goodwill impairment"],
+        "gross_margin": ["gross margin", "gross profit margin", "gross profitability"],
+        "management_issues": ["management change", "CEO", "CFO", "resignation", "manpower", "leadership"],
+        "regulatory_compliance": ["regulatory", "compliance", "penalty", "violation", "regulator"],
+        "market_competition": ["competition", "market share", "competitor", "competitive pressure"],
+        "operational_disruptions": ["operational", "supply chain", "production issues", "operations"]
+    }
+
+def perform_detailed_calculation_analysis(flag: str, criteria_name: str, previous_data: Dict[str, float]) -> Dict[str, Any]:
+    """Perform detailed calculations with comprehensive print statements"""
+    
+    print(f"\n{'-'*80}")
+    print(f"DETAILED CALCULATION FOR FLAG: {flag}")
+    print(f"MATCHED CRITERIA: {criteria_name}")
+    print(f"{'-'*80}")
     
     flag_numbers = extract_numbers_from_flag(flag)
+    print(f"Numbers extracted from flag: {flag_numbers}")
     
     result = {
         'calculation_performed': False,
@@ -294,75 +327,91 @@ def perform_calculation_analysis(flag: str, criteria_name: str, previous_data: D
         'percentage_change': 0.0,
         'threshold': 0.0,
         'risk_level': 'Low',
-        'calculation_type': ''
+        'calculation_type': '',
+        'previous_value': 0.0,
+        'current_value': 0.0,
+        'calculation_details': ''
     }
     
-    # Define calculation mappings
+    # Define calculation mappings with detailed info
     calculation_mappings = {
         'debt_increase': {
             'prev_key': 'debt as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Debt Increase Analysis'
         },
         'revenue_decline': {
             'prev_key': 'revenue as per previous reported quarter number', 
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Revenue Decline Analysis'
         },
         'profit_before_tax_decline': {
             'prev_key': 'profit before tax as per previous reported quarter number',
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Profit Before Tax Decline Analysis'
         },
         'profit_after_tax_decline': {
             'prev_key': 'profit after tax as per previous reported quarter number',
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Profit After Tax Decline Analysis'
         },
         'ebidta_decline': {
             'prev_key': 'ebidta as per previous reported quarter number',
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'EBITDA Decline Analysis'
         },
         'asset_decline': {
             'prev_key': 'asset value as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Asset Value Decline Analysis'
         },
         'receivable_days': {
             'prev_key': 'receivable days as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Receivable Days Increase Analysis'
         },
         'payable_days': {
             'prev_key': 'payable days as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Payable Days Increase Analysis'
         },
         'margin_decline': {
             'prev_key': 'operating margin as per previous quarter number',
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Operating Margin Decline Analysis'
         },
         'cash_balance': {
             'prev_key': 'cash balance as per previous reported balance sheet number',
             'threshold': 25,
-            'comparison': 'decline'
+            'comparison': 'decline',
+            'description': 'Cash Balance Decline Analysis'
         },
         'short_term_borrowings': {
             'prev_key': 'short term borrowings as per the previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Short-term Borrowings Increase Analysis'
         },
         'receivables': {
             'prev_key': 'receivables as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Receivables Increase Analysis'
         },
         'payables': {
             'prev_key': 'payables as per previous reported balance sheet number',
             'threshold': 30,
-            'comparison': 'increase'
+            'comparison': 'increase',
+            'description': 'Payables Increase Analysis'
         }
     }
     
@@ -371,66 +420,143 @@ def perform_calculation_analysis(flag: str, criteria_name: str, previous_data: D
         prev_key = mapping['prev_key']
         threshold = mapping['threshold']
         comparison_type = mapping['comparison']
+        description = mapping['description']
         
-        if prev_key in previous_data and flag_numbers:
+        print(f"Analysis Type: {description}")
+        print(f"Previous data key: '{prev_key}'")
+        print(f"Threshold for High Risk: {threshold}%")
+        print(f"Comparison Type: {comparison_type}")
+        
+        if prev_key in previous_data:
             previous_value = previous_data[prev_key]
+            print(f"Previous period value: {previous_value}")
             
-            for current_value in flag_numbers:
-                if previous_value != 0:
-                    if comparison_type == 'decline':
-                        percentage_change = ((previous_value - current_value) / previous_value) * 100
-                    else:  # increase
-                        percentage_change = ((current_value - previous_value) / previous_value) * 100
+            if flag_numbers:
+                print(f"Attempting calculation with flag numbers: {flag_numbers}")
+                
+                for current_value in flag_numbers:
+                    print(f"Testing current value: {current_value}")
                     
-                    result['calculation_performed'] = True
-                    result['percentage_change'] = percentage_change
-                    result['threshold'] = threshold
-                    result['calculation_type'] = comparison_type
-                    
-                    if percentage_change >= threshold:
-                        result['risk_level'] = 'High'
-                        result['threshold_met'] = True
+                    if previous_value != 0:
+                        if comparison_type == 'decline':
+                            percentage_change = ((previous_value - current_value) / previous_value) * 100
+                            direction = "decline"
+                        else:  # increase
+                            percentage_change = ((current_value - previous_value) / previous_value) * 100
+                            direction = "increase"
+                        
+                        print(f"Calculation: (({previous_value} - {current_value}) / {previous_value}) × 100 = {percentage_change:.2f}%")
+                        print(f"Direction: {direction}")
+                        
+                        result['calculation_performed'] = True
+                        result['percentage_change'] = percentage_change
+                        result['threshold'] = threshold
+                        result['calculation_type'] = comparison_type
+                        result['previous_value'] = previous_value
+                        result['current_value'] = current_value
+                        result['calculation_details'] = f"{direction.title()}: {percentage_change:.1f}% (threshold: {threshold}%)"
+                        
+                        if percentage_change >= threshold:
+                            result['risk_level'] = 'High'
+                            result['threshold_met'] = True
+                            print(f"✅ HIGH RISK: {percentage_change:.2f}% {direction} ≥ {threshold}% threshold")
+                        else:
+                            result['risk_level'] = 'Low'
+                            result['threshold_met'] = False
+                            print(f"⚠️  LOW RISK: {percentage_change:.2f}% {direction} < {threshold}% threshold")
+                        break
                     else:
-                        result['risk_level'] = 'Low'
-                        result['threshold_met'] = False
-                    break
+                        print(f"⚠️  Cannot calculate - previous value is zero")
+            else:
+                print(f"⚠️  No numbers found in flag text for calculation")
+        else:
+            print(f"⚠️  Previous data key '{prev_key}' not found")
+            print(f"Available keys: {list(previous_data.keys())}")
     
     # Special case for debt_ebitda ratio
     elif criteria_name == 'debt_ebitda':
+        print(f"Analysis Type: Debt to EBITDA Ratio Analysis")
         debt_key = 'debt as per previous reported balance sheet number'
         ebitda_key = 'current quarter ebidta'
+        
+        print(f"Looking for debt key: '{debt_key}'")
+        print(f"Looking for EBITDA key: '{ebitda_key}'")
         
         if debt_key in previous_data and ebitda_key in previous_data:
             debt = previous_data[debt_key]
             ebitda = previous_data[ebitda_key]
             
+            print(f"Debt value: {debt}")
+            print(f"EBITDA value: {ebitda}")
+            
             if ebitda != 0:
                 debt_ebitda_ratio = debt / ebitda
+                print(f"Calculation: {debt} / {ebitda} = {debt_ebitda_ratio:.2f}x")
+                print(f"Threshold for High Risk: 3.0x")
+                
                 result['calculation_performed'] = True
                 result['percentage_change'] = debt_ebitda_ratio
                 result['threshold'] = 3.0
                 result['calculation_type'] = 'ratio'
+                result['previous_value'] = ebitda
+                result['current_value'] = debt
+                result['calculation_details'] = f"Debt/EBITDA: {debt_ebitda_ratio:.1f}x (threshold: 3.0x)"
                 
                 if debt_ebitda_ratio > 3.0:
                     result['risk_level'] = 'High'
                     result['threshold_met'] = True
+                    print(f"✅ HIGH RISK: {debt_ebitda_ratio:.2f}x > 3.0x threshold")
                 else:
                     result['risk_level'] = 'Low'
                     result['threshold_met'] = False
+                    print(f"⚠️  LOW RISK: {debt_ebitda_ratio:.2f}x ≤ 3.0x threshold")
+            else:
+                print(f"⚠️  Cannot calculate ratio - EBITDA is zero")
+        else:
+            print(f"⚠️  Required data not found for debt/EBITDA calculation")
+    else:
+        print(f"⚠️  No calculation mapping defined for criteria: {criteria_name}")
+    
+    print(f"FINAL RESULT: {result['risk_level']} Risk")
+    if result['calculation_performed']:
+        print(f"CALCULATION SUMMARY: {result['calculation_details']}")
+    print(f"{'-'*80}")
     
     return result
 
-def classify_flag_against_criteria_with_calculations(flag: str, criteria_definitions: Dict[str, str], 
-                                                   previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification with actual calculations"""
+def classify_flag_against_criteria_strict(flag: str, criteria_definitions: Dict[str, str], 
+                                         previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, Any]:
+    """Enhanced classification with strict criteria matching and detailed calculations"""
     
     # Parse previous year data
     previous_data = parse_previous_year_data(previous_year_data)
     
-    # First, let LLM identify the criteria
-    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
+    # Get criteria keywords for matching
+    criteria_keywords = get_criteria_keywords()
     
-    prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
+    print(f"\n📊 CLASSIFYING FLAG: {flag}")
+    print(f"Parsed previous year data keys: {list(previous_data.keys())}")
+    
+    # First, try keyword-based matching
+    matched_criteria = 'None'
+    flag_lower = flag.lower()
+    
+    # Check for keyword matches
+    for criteria_name, keywords in criteria_keywords.items():
+        for keyword in keywords:
+            if keyword.lower() in flag_lower:
+                matched_criteria = criteria_name
+                print(f"✅ Keyword match found: '{keyword}' → {criteria_name}")
+                break
+        if matched_criteria != 'None':
+            break
+    
+    # If no keyword match, use LLM for classification
+    if matched_criteria == 'None':
+        print(f"⚠️  No keyword match found, using LLM classification...")
+        criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
+        
+        prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
 
 RED FLAG: "{flag}"
 
@@ -439,59 +565,54 @@ CRITERIA LIST:
 
 Give answer in this format:
 Matched_Criteria: [criteria name or "None"]"""
+        
+        try:
+            response = llm._call(prompt, max_tokens=200, temperature=0.0)
+            lines = response.strip().split('\n')
+            for line in lines:
+                if 'Matched_Criteria:' in line:
+                    matched_criteria = line.split(':', 1)[1].strip()
+                    print(f"🤖 LLM matched criteria: {matched_criteria}")
+                    break
+        except Exception as e:
+            print(f"❌ LLM classification failed: {e}")
+            matched_criteria = 'None'
     
-    try:
-        response = llm._call(prompt, max_tokens=200, temperature=0.0)
+    # Perform calculations if criteria is matched
+    if matched_criteria != 'None' and matched_criteria in criteria_definitions:
+        calculation_result = perform_detailed_calculation_analysis(flag, matched_criteria, previous_data)
         
-        # Parse LLM response
-        matched_criteria = 'None'
-        lines = response.strip().split('\n')
-        for line in lines:
-            if 'Matched_Criteria:' in line:
-                matched_criteria = line.split(':', 1)[1].strip()
-                break
-        
-        # Perform calculations if criteria is matched
-        if matched_criteria != 'None' and matched_criteria in criteria_definitions:
-            calculation_result = perform_calculation_analysis(flag, matched_criteria, previous_data)
-            
-            return {
-                'matched_criteria': matched_criteria,
-                'risk_level': calculation_result['risk_level'],
-                'reasoning': f"Calculated: {calculation_result['percentage_change']:.1f}% (threshold: {calculation_result['threshold']}%)" if calculation_result['calculation_performed'] else "No calculation data available",
-                'calculation_performed': str(calculation_result['calculation_performed']),
-                'threshold_met': str(calculation_result['threshold_met']),
-                'percentage_change': calculation_result['percentage_change'],
-                'threshold': calculation_result['threshold']
-            }
-        else:
-            return {
-                'matched_criteria': matched_criteria,
-                'risk_level': 'Low',
-                'reasoning': "No matching criteria found",
-                'calculation_performed': 'False',
-                'threshold_met': 'False',
-                'percentage_change': 0.0,
-                'threshold': 0.0
-            }
-        
-    except Exception as e:
         return {
-            'matched_criteria': 'None',
-            'risk_level': 'Low', 
-            'reasoning': f'Classification error: {str(e)}',
+            'matched_criteria': matched_criteria,
+            'risk_level': calculation_result['risk_level'],
+            'reasoning': calculation_result['calculation_details'] if calculation_result['calculation_performed'] else "No calculation data available",
+            'calculation_performed': str(calculation_result['calculation_performed']),
+            'threshold_met': str(calculation_result['threshold_met']),
+            'percentage_change': calculation_result['percentage_change'],
+            'threshold': calculation_result['threshold'],
+            'previous_value': calculation_result['previous_value'],
+            'current_value': calculation_result['current_value']
+        }
+    else:
+        print(f"⚠️  No matching criteria found or criteria not in definitions")
+        return {
+            'matched_criteria': matched_criteria,
+            'risk_level': 'Low',
+            'reasoning': "No matching criteria found",
             'calculation_performed': 'False',
             'threshold_met': 'False',
             'percentage_change': 0.0,
-            'threshold': 0.0
+            'threshold': 0.0,
+            'previous_value': 0.0,
+            'current_value': 0.0
         }
 
 def print_classification_results(classification_results: List[Dict], unique_flags: List[str]):
     """Print clean, professional classification results"""
     
-    print(f"\n{'='*100}")
-    print(f"                           RISK CLASSIFICATION RESULTS")
-    print(f"{'='*100}")
+    print(f"\n{'='*120}")
+    print(f"                                    RISK CLASSIFICATION RESULTS")
+    print(f"{'='*120}")
     
     high_count = 0
     low_count = 0
@@ -506,7 +627,7 @@ def print_classification_results(classification_results: List[Dict], unique_flag
             low_count += 1
         
         # Format the output line
-        flag_short = flag[:60] + "..." if len(flag) > 60 else flag
+        flag_short = flag[:50] + "..." if len(flag) > 50 else flag
         
         if result['calculation_performed'] == 'True':
             if result['matched_criteria'] == 'debt_ebitda':
@@ -516,25 +637,27 @@ def print_classification_results(classification_results: List[Dict], unique_flag
         else:
             calc_display = "No calculation"
         
-        print(f"{i:2d}. {risk_level:4s} | {criteria:20s} | {calc_display:20s} | {flag_short}")
+        print(f"{i:2d}. {risk_level:4s} | {criteria:22s} | {calc_display:25s} | {flag_short}")
     
-    print(f"{'='*100}")
+    print(f"{'='*120}")
     print(f"SUMMARY: {high_count} High Risk  |  {low_count} Low Risk  |  {len(unique_flags)} Total Flags")
-    print(f"{'='*100}")
+    print(f"{'='*120}")
 
-def process_flags_with_clean_output(unique_flags, criteria_definitions, previous_year_data, llm):
-    """Process flags and show clean professional output"""
+def process_flags_with_detailed_calculations(unique_flags, criteria_definitions, previous_year_data, llm):
+    """Process flags with detailed calculation output"""
     
     classification_results = []
     high_risk_flags = []
     low_risk_flags = []
     
     if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
-        print(f"\nProcessing {len(unique_flags)} flags for risk classification...")
+        print(f"\n🔍 STARTING DETAILED CLASSIFICATION OF {len(unique_flags)} FLAGS")
+        print(f"{'='*100}")
         
         for i, flag in enumerate(unique_flags, 1):
+            print(f"\n🚩 FLAG {i}/{len(unique_flags)}")
             try:
-                classification = classify_flag_against_criteria_with_calculations(
+                classification = classify_flag_against_criteria_strict(
                     flag=flag,
                     criteria_definitions=criteria_definitions,
                     previous_year_data=previous_year_data, 
@@ -560,7 +683,9 @@ def process_flags_with_clean_output(unique_flags, criteria_definitions, previous
                     'calculation_performed': 'False',
                     'threshold_met': 'False',
                     'percentage_change': 0.0,
-                    'threshold': 0.0
+                    'threshold': 0.0,
+                    'previous_value': 0.0,
+                    'current_value': 0.0
                 })
                 low_risk_flags.append(flag)
             
@@ -577,6 +702,11 @@ def process_flags_with_clean_output(unique_flags, criteria_definitions, previous
     
     return classification_results, high_risk_flags, low_risk_flags, risk_counts
 
+def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
+    """Parse the 4th iteration summary response by categories"""
+    categories_summary = {}
+    sections = fourth_response.split('###')
+   
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
     categories_summary = {}
@@ -880,7 +1010,7 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
             logger.warning(f"Error loading queries file: {e}. Using default query.")
             first_query = "Analyze this document for potential red flags."
         
-        # ITERATION 1: Initial red flag identification with structured prompt
+        # ITERATION 1: Initial red flag identification with structured prompt (UNCHANGED)
         print("Running 1st iteration - Initial Analysis...")
         first_prompt = f"""<role>
 You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
@@ -920,7 +1050,7 @@ Provide comprehensive red flag analysis:"""
         
         first_response = llm._call(first_prompt, max_tokens=4000)
         
-        # ITERATION 2: Deduplication (keeping original as requested)
+        # ITERATION 2: Deduplication (UNCHANGED)
         print("Running 2nd iteration - Deduplication...")
         second_prompt = "Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. Do not lose data if duplicates are not found."
         
@@ -937,7 +1067,7 @@ Answer:"""
         
         second_response = llm._call(second_full_prompt, max_tokens=4000)
         
-        # ITERATION 3: Categorization with structured prompt
+        # ITERATION 3: Categorization (UNCHANGED)
         print("Running 3rd iteration - Categorization...")
         third_prompt = f"""<role>
 You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
@@ -991,7 +1121,7 @@ Provide categorized analysis:"""
         
         third_response = llm._call(third_prompt, max_tokens=4000)
         
-        # ITERATION 4: Summary generation with structured prompt
+        # ITERATION 4: Summary generation (UNCHANGED)
         print("Running 4th iteration - Summary Generation...")
         fourth_prompt = f"""<role>
 You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
@@ -1040,13 +1170,21 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
-        # ITERATION 5: Extract unique flags with ENHANCED DEDUPLICATION and classify
-        print("Running 5th iteration - Enhanced Unique Flags Classification...")
+        # ITERATION 5: Enhanced flag extraction and classification with detailed calculations
+        print("Running 5th iteration - Enhanced Classification with Detailed Calculations...")
+        
+        # Parse previous year data first and display it
+        parsed_previous_data = parse_previous_year_data(previous_year_data)
+        print(f"\n📊 PARSED PREVIOUS YEAR DATA:")
+        print(f"{'='*60}")
+        for key, value in parsed_previous_data.items():
+            print(f"{key}: {value}")
+        print(f"{'='*60}")
         
         # Step 1: Extract unique flags with STRICT deduplication
         try:
             unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
-            print(f"\nUnique flags extracted: {len(unique_flags)}")
+            print(f"\n🚩 EXTRACTED {len(unique_flags)} UNIQUE FLAGS")
         except Exception as e:
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
@@ -1077,8 +1215,8 @@ Provide factual category summaries:"""
             "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
         }
         
-        # Step 2: Classify each unique flag with CALCULATIONS and clean output
-        classification_results, high_risk_flags, low_risk_flags, risk_counts = process_flags_with_clean_output(
+        # Step 2: Classify each unique flag with DETAILED CALCULATIONS
+        classification_results, high_risk_flags, low_risk_flags, risk_counts = process_flags_with_detailed_calculations(
             unique_flags, criteria_definitions, previous_year_data, llm
         )
         
@@ -1121,7 +1259,7 @@ Provide factual category summaries:"""
                 "Deduplication", 
                 "Categorization",
                 "Summary Generation",
-                "Enhanced Unique Flags Classification"
+                "Enhanced Classification with Detailed Calculations"
             ],
             "response": [
                 first_response,
