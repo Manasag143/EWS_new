@@ -227,7 +227,7 @@ Extract unique flags:"""
         
         # Apply additional aggressive deduplication
         final_flags = []
-        seen_keywords = []  # Changed from set to list
+        seen_keywords = []
         
         for flag in flags_list:
             if not flag or len(flag) <= 5:
@@ -248,182 +248,188 @@ Extract unique flags:"""
             
             if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
-                seen_keywords.append(words)  # Append the set to the list
+                seen_keywords.append(words)
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
     except Exception as e:
         logger.error(f"Error in strict deduplication: {e}")
         return ["Error in flag extraction"]
-    
-def extract_current_values_from_context(context: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Extract current financial values from PDF context"""
-    
-    prompt = f"""<role>
-You are an expert financial data extractor specializing in identifying specific financial metrics from earnings transcripts and financial documents.
-</role>
 
-<instruction>
-Extract ONLY the following specific financial values if mentioned in the document. If a value is not found, respond with "Not Present".
-
-EXTRACT THESE VALUES:
-1. Current Debt amount
-2. Current EBITDA amount  
-3. Current Asset Value
-4. Current Receivable Days
-5. Current Payable Days
-6. Current Revenue amount
-7. Current Profit Before Tax
-8. Current Operating Margin percentage
-9. Current Cash Balance
-10. Current Liabilities amount
-
-OUTPUT FORMAT:
-Provide ONLY in this exact format:
-Current Debt: [amount or "Not Present"]
-Current EBITDA: [amount or "Not Present"]
-Current Asset Value: [amount or "Not Present"]
-Current Receivable Days: [days or "Not Present"]
-Current Payable Days: [days or "Not Present"]
-Current Revenue: [amount or "Not Present"]
-Current Profit Before Tax: [amount or "Not Present"]
-Current Operating Margin: [percentage or "Not Present"]
-Current Cash Balance: [amount or "Not Present"]
-Current Liabilities: [amount or "Not Present"]
-
-Be precise and extract exact values with units (Cr, days, %) as mentioned in the document.
-</instruction>
-
-<context>
-{context}
-</context>
-
-Extract current values:"""
+def parse_previous_year_data(previous_year_data: str) -> Dict[str, float]:
+    """Parse the previous year data string into a dictionary for calculations"""
+    data_dict = {}
+    lines = previous_year_data.strip().split('\n')
     
-    try:
-        response = llm._call(prompt, max_tokens=300, temperature=0.0)
-        
-        # Parse the response into a dictionary
-        current_values = {}
-        lines = response.strip().split('\n')
-        
-        for line in lines:
-            if ':' in line:
-                key, value = line.split(':', 1)
-                key = key.strip().replace('Current ', '').lower().replace(' ', '_')
-                value = value.strip()
-                current_values[key] = value
-        
-        return current_values
-        
-    except Exception as e:
-        logger.error(f"Error extracting current values: {e}")
-        return {}
-
-def compare_with_previous_year(previous_year_data: Dict[str, Any], context: str, llm: AzureOpenAILLM):
-    """Compare current values with previous year data and print comparison results"""
-    
-    print(f"\n{'='*60}")
-    print(f"PREVIOUS YEAR DATA COMPARISON")
-    print(f"{'='*60}")
-    
-    # Extract current values from context
-    current_values = extract_current_values_from_context(context, llm)
-    
-    # Define mappings between previous year keys and current value keys
-    comparison_mapping = {
-        'debt': ('debt', 'Cr'),
-        'ebitda': ('ebitda', 'Cr'),
-        'asset_value': ('asset_value', 'Cr'),
-        'receivable_days': ('receivable_days', 'days'),
-        'payable_days': ('payable_days', 'days'),
-        'revenue': ('revenue', 'Cr'),
-        'profit_before_tax': ('profit_before_tax', 'Cr'),
-        'operating_margin': ('operating_margin', '%'),
-        'cash_balance': ('cash_balance', 'Cr'),
-        'current_liabilities': ('liabilities', 'Cr')
-    }
-    
-    for prev_key, prev_data in previous_year_data.items():
-        if prev_key in comparison_mapping:
-            current_key, unit = comparison_mapping[prev_key]
-            prev_value = prev_data['value']
-            prev_period = prev_data['period']
-            
-            current_value = current_values.get(current_key, "Not Present")
-            
-            print(f"\n{prev_key.upper().replace('_', ' ')}:")
-            print(f"  Previous ({prev_period}): {prev_value}{unit}")
-            print(f"  Current: {current_value}")
-            
-            if current_value != "Not Present" and current_value.lower() != "not present":
-                # Try to extract numeric values for comparison
+    for line in lines:
+        if '\t' in line:
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                key = parts[0].strip().lower()
+                value_str = parts[2].strip()
+                
+                # Extract numeric value (remove 'Cr', '%', etc.)
+                value_str = re.sub(r'[^\d.-]', '', value_str)
                 try:
-                    # Extract numbers from strings (handle Cr, %, days)
-                    prev_num = float(re.sub(r'[^\d.]', '', str(prev_value)))
-                    curr_num = float(re.sub(r'[^\d.]', '', str(current_value)))
-                    
-                    if prev_num > 0:
-                        change_pct = ((curr_num - prev_num) / prev_num) * 100
-                        change_direction = "increase" if change_pct > 0 else "decrease"
-                        print(f"  Change: {abs(change_pct):.1f}% {change_direction}")
-                        
-                        # Apply risk assessment based on criteria
-                        risk_level = "Low Risk"
-                        if prev_key in ['debt', 'asset_value', 'receivable_days', 'payable_days', 'current_liabilities']:
-                            if abs(change_pct) >= 30:
-                                risk_level = "High Risk"
-                        elif prev_key in ['revenue', 'profit_before_tax', 'operating_margin']:
-                            if change_pct <= -25:  # 25% or more decline
-                                risk_level = "High Risk"
-                        elif prev_key in ['cash_balance']:
-                            if change_pct <= -25:  # 25% or more decline
-                                risk_level = "High Risk"
-                        elif prev_key == 'ebitda':
-                            # For EBITDA, significant decline is concerning
-                            if change_pct <= -25:
-                                risk_level = "High Risk"
-                        
-                        print(f"  Risk Assessment: {risk_level}")
-                    else:
-                        print(f"  Change: Cannot calculate (previous value is 0)")
-                        
-                except (ValueError, TypeError):
-                    print(f"  Change: Cannot calculate (non-numeric values)")
-            else:
-                print(f"  Change: Cannot calculate (current data not available)")
-
-def classify_flag_against_criteria_simple(flag: str, criteria_definitions: Dict[str, str], 
-                                         previous_year_data: Dict[str, Any], llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Simplified classification with clear, concise prompt"""
+                    value = float(value_str)
+                    data_dict[key] = value
+                except ValueError:
+                    continue
     
-    # Simple keyword mapping - just the most important ones
-    criteria_keywords = {
-        "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase"],
-        "provisioning": ["provision", "write-off", "bad debt", "impairment"],
-        "asset_decline": ["asset decline", "asset fall", "asset decrease"],
-        "receivable_days": ["receivable days", "collection period", "DSO"],
-        "payable_days": ["payable days", "payment period", "DPO"],
-        "debt_ebitda": ["debt to ebitda", "leverage ratio", "debt multiple"],
-        "revenue_decline": ["revenue decline", "sales decline", "revenue fall"],
-        "onetime_expenses": ["one-time", "exceptional", "non-recurring"],
-        "margin_decline": ["margin decline", "margin pressure", "profitability decline"],
-        "cash_balance": ["cash decline", "liquidity issue", "cash shortage"],
-        "short_term_debt": ["short-term debt", "current liabilities"],
-        "management_issues": ["management change", "CEO", "CFO", "resignation", "manpower"],
-        "regulatory_compliance": ["regulatory", "compliance", "penalty", "violation"],
-        "market_competition": ["competition", "market share", "competitor"],
-        "operational_disruptions": ["operational", "supply chain", "production issues"]
+    return data_dict
+
+def extract_numbers_from_flag(flag: str) -> List[float]:
+    """Extract numeric values from flag text"""
+    numbers = re.findall(r'\d+(?:\.\d+)?', flag)
+    return [float(num) for num in numbers]
+
+def perform_calculation_analysis(flag: str, criteria_name: str, previous_data: Dict[str, float]) -> Dict[str, Any]:
+    """Perform actual calculations and return results"""
+    
+    flag_numbers = extract_numbers_from_flag(flag)
+    
+    result = {
+        'calculation_performed': False,
+        'threshold_met': False,
+        'percentage_change': 0.0,
+        'threshold': 0.0,
+        'risk_level': 'Low',
+        'calculation_type': ''
     }
     
+    # Define calculation mappings
+    calculation_mappings = {
+        'debt_increase': {
+            'prev_key': 'debt as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        },
+        'revenue_decline': {
+            'prev_key': 'revenue as per previous reported quarter number', 
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'profit_before_tax_decline': {
+            'prev_key': 'profit before tax as per previous reported quarter number',
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'profit_after_tax_decline': {
+            'prev_key': 'profit after tax as per previous reported quarter number',
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'ebidta_decline': {
+            'prev_key': 'ebidta as per previous reported quarter number',
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'asset_decline': {
+            'prev_key': 'asset value as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'decline'
+        },
+        'receivable_days': {
+            'prev_key': 'receivable days as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        },
+        'payable_days': {
+            'prev_key': 'payable days as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        },
+        'margin_decline': {
+            'prev_key': 'operating margin as per previous quarter number',
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'cash_balance': {
+            'prev_key': 'cash balance as per previous reported balance sheet number',
+            'threshold': 25,
+            'comparison': 'decline'
+        },
+        'short_term_borrowings': {
+            'prev_key': 'short term borrowings as per the previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        },
+        'receivables': {
+            'prev_key': 'receivables as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        },
+        'payables': {
+            'prev_key': 'payables as per previous reported balance sheet number',
+            'threshold': 30,
+            'comparison': 'increase'
+        }
+    }
+    
+    if criteria_name in calculation_mappings:
+        mapping = calculation_mappings[criteria_name]
+        prev_key = mapping['prev_key']
+        threshold = mapping['threshold']
+        comparison_type = mapping['comparison']
+        
+        if prev_key in previous_data and flag_numbers:
+            previous_value = previous_data[prev_key]
+            
+            for current_value in flag_numbers:
+                if previous_value != 0:
+                    if comparison_type == 'decline':
+                        percentage_change = ((previous_value - current_value) / previous_value) * 100
+                    else:  # increase
+                        percentage_change = ((current_value - previous_value) / previous_value) * 100
+                    
+                    result['calculation_performed'] = True
+                    result['percentage_change'] = percentage_change
+                    result['threshold'] = threshold
+                    result['calculation_type'] = comparison_type
+                    
+                    if percentage_change >= threshold:
+                        result['risk_level'] = 'High'
+                        result['threshold_met'] = True
+                    else:
+                        result['risk_level'] = 'Low'
+                        result['threshold_met'] = False
+                    break
+    
+    # Special case for debt_ebitda ratio
+    elif criteria_name == 'debt_ebitda':
+        debt_key = 'debt as per previous reported balance sheet number'
+        ebitda_key = 'current quarter ebidta'
+        
+        if debt_key in previous_data and ebitda_key in previous_data:
+            debt = previous_data[debt_key]
+            ebitda = previous_data[ebitda_key]
+            
+            if ebitda != 0:
+                debt_ebitda_ratio = debt / ebitda
+                result['calculation_performed'] = True
+                result['percentage_change'] = debt_ebitda_ratio
+                result['threshold'] = 3.0
+                result['calculation_type'] = 'ratio'
+                
+                if debt_ebitda_ratio > 3.0:
+                    result['risk_level'] = 'High'
+                    result['threshold_met'] = True
+                else:
+                    result['risk_level'] = 'Low'
+                    result['threshold_met'] = False
+    
+    return result
+
+def classify_flag_against_criteria_with_calculations(flag: str, criteria_definitions: Dict[str, str], 
+                                                   previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Enhanced classification with actual calculations"""
+    
+    # Parse previous year data
+    previous_data = parse_previous_year_data(previous_year_data)
+    
+    # First, let LLM identify the criteria
     criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
     
-    # Convert previous_year_data dict to string format for LLM
-    prev_data_str = ""
-    for key, data in previous_year_data.items():
-        prev_data_str += f"Previous {key.replace('_', ' ')}: {data['value']}{data.get('unit', '')} ({data['period']})\n"
-    
-    # Much simpler prompt
     prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
 
 RED FLAG: "{flag}"
@@ -431,50 +437,145 @@ RED FLAG: "{flag}"
 CRITERIA LIST:
 {criteria_list}
 
-RULES:
-1. Find which criteria this flag belongs to based on keywords
-2. Check if it meets the High/Low threshold using previous year data
-3. If no clear match, say "None"
-
-PREVIOUS YEAR DATA:
-{prev_data_str}
-
 Give answer in this format:
-Matched_Criteria: [criteria name or "None"]
-Risk_Level: [High or Low]
-Reasoning: [one line explanation]"""
+Matched_Criteria: [criteria name or "None"]"""
     
     try:
         response = llm._call(prompt, max_tokens=200, temperature=0.0)
         
-        # Simple parsing
-        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found'}
-        
+        # Parse LLM response
+        matched_criteria = 'None'
         lines = response.strip().split('\n')
         for line in lines:
             if 'Matched_Criteria:' in line:
-                result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Risk_Level:' in line:
-                result['risk_level'] = line.split(':', 1)[1].strip()
-            elif 'Reasoning:' in line:
-                result['reasoning'] = line.split(':', 1)[1].strip()
+                matched_criteria = line.split(':', 1)[1].strip()
+                break
         
-        # Simple fallback check
-        flag_lower = flag.lower()
-        for criteria_name, keywords in criteria_keywords.items():
-            for keyword in keywords:
-                if keyword.lower() in flag_lower:
-                    if result['matched_criteria'] == 'None':
-                        result['matched_criteria'] = criteria_name
-                        # Simple severity check
-                        if any(word in flag_lower for word in ['significant', 'major', 'increased', 'declined', 'higher']):
-                            result['risk_level'] = 'High'
-                        break
-        
-        return result
+        # Perform calculations if criteria is matched
+        if matched_criteria != 'None' and matched_criteria in criteria_definitions:
+            calculation_result = perform_calculation_analysis(flag, matched_criteria, previous_data)
+            
+            return {
+                'matched_criteria': matched_criteria,
+                'risk_level': calculation_result['risk_level'],
+                'reasoning': f"Calculated: {calculation_result['percentage_change']:.1f}% (threshold: {calculation_result['threshold']}%)" if calculation_result['calculation_performed'] else "No calculation data available",
+                'calculation_performed': str(calculation_result['calculation_performed']),
+                'threshold_met': str(calculation_result['threshold_met']),
+                'percentage_change': calculation_result['percentage_change'],
+                'threshold': calculation_result['threshold']
+            }
+        else:
+            return {
+                'matched_criteria': matched_criteria,
+                'risk_level': 'Low',
+                'reasoning': "No matching criteria found",
+                'calculation_performed': 'False',
+                'threshold_met': 'False',
+                'percentage_change': 0.0,
+                'threshold': 0.0
+            }
         
     except Exception as e:
-        return {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': f'Error: {str(e)}'}
+        return {
+            'matched_criteria': 'None',
+            'risk_level': 'Low', 
+            'reasoning': f'Classification error: {str(e)}',
+            'calculation_performed': 'False',
+            'threshold_met': 'False',
+            'percentage_change': 0.0,
+            'threshold': 0.0
+        }
+
+def print_classification_results(classification_results: List[Dict], unique_flags: List[str]):
+    """Print clean, professional classification results"""
+    
+    print(f"\n{'='*100}")
+    print(f"                           RISK CLASSIFICATION RESULTS")
+    print(f"{'='*100}")
+    
+    high_count = 0
+    low_count = 0
+    
+    for i, (flag, result) in enumerate(zip(unique_flags, classification_results), 1):
+        risk_level = result['risk_level']
+        criteria = result['matched_criteria']
+        
+        if risk_level == 'High':
+            high_count += 1
+        else:
+            low_count += 1
+        
+        # Format the output line
+        flag_short = flag[:60] + "..." if len(flag) > 60 else flag
+        
+        if result['calculation_performed'] == 'True':
+            if result['matched_criteria'] == 'debt_ebitda':
+                calc_display = f"{result['percentage_change']:.1f}x (threshold: {result['threshold']}x)"
+            else:
+                calc_display = f"{result['percentage_change']:.1f}% (threshold: {result['threshold']}%)"
+        else:
+            calc_display = "No calculation"
+        
+        print(f"{i:2d}. {risk_level:4s} | {criteria:20s} | {calc_display:20s} | {flag_short}")
+    
+    print(f"{'='*100}")
+    print(f"SUMMARY: {high_count} High Risk  |  {low_count} Low Risk  |  {len(unique_flags)} Total Flags")
+    print(f"{'='*100}")
+
+def process_flags_with_clean_output(unique_flags, criteria_definitions, previous_year_data, llm):
+    """Process flags and show clean professional output"""
+    
+    classification_results = []
+    high_risk_flags = []
+    low_risk_flags = []
+    
+    if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
+        print(f"\nProcessing {len(unique_flags)} flags for risk classification...")
+        
+        for i, flag in enumerate(unique_flags, 1):
+            try:
+                classification = classify_flag_against_criteria_with_calculations(
+                    flag=flag,
+                    criteria_definitions=criteria_definitions,
+                    previous_year_data=previous_year_data, 
+                    llm=llm
+                )
+                
+                classification_results.append(classification)
+                
+                # Add to appropriate risk category
+                if (classification['risk_level'].lower() == 'high' and 
+                    classification['matched_criteria'] != 'None'):
+                    high_risk_flags.append(flag)
+                else:
+                    low_risk_flags.append(flag)
+                    
+            except Exception as e:
+                logger.error(f"Error classifying flag {i}: {e}")
+                classification_results.append({
+                    'flag': flag,
+                    'matched_criteria': 'None',
+                    'risk_level': 'Low',
+                    'reasoning': f'Classification failed: {str(e)}',
+                    'calculation_performed': 'False',
+                    'threshold_met': 'False',
+                    'percentage_change': 0.0,
+                    'threshold': 0.0
+                })
+                low_risk_flags.append(flag)
+            
+            time.sleep(0.3)
+    
+    # Print clean results
+    print_classification_results(classification_results, unique_flags)
+    
+    risk_counts = {
+        'High': len(high_risk_flags),
+        'Low': len(low_risk_flags),
+        'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
+    }
+    
+    return classification_results, high_risk_flags, low_risk_flags, risk_counts
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -510,7 +611,7 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     
     # First, deduplicate the high_risk_flags themselves
     unique_high_risk_flags = []
-    seen_flag_keywords = []  # Changed from set to list
+    seen_flag_keywords = []
     
     for flag in high_risk_flags:
         normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
@@ -526,10 +627,10 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
         
         if not is_duplicate_flag:
             unique_high_risk_flags.append(flag)
-            seen_flag_keywords.append(flag_words)  # Append the set to the list
+            seen_flag_keywords.append(flag_words)
     
     concise_summaries = []
-    seen_summary_keywords = []  # Changed from set to list
+    seen_summary_keywords = []
     
     for flag in unique_high_risk_flags:
         prompt = f"""
@@ -594,7 +695,7 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             
             if not is_duplicate_summary:
                 concise_summaries.append(concise_summary)
-                seen_summary_keywords.append(summary_words)  # Append the set to the list
+                seen_summary_keywords.append(summary_words)
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
@@ -741,7 +842,7 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             logger.error(f"Error creating fallback document: {e2}")
             return None
 
-def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: Dict[str, Any], 
+def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
@@ -763,9 +864,6 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
         
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
-        
-        # Add comparison output here
-        compare_with_previous_year(previous_year_data, context, llm)
         
         # Load first query from CSV/Excel
         try:
@@ -953,94 +1051,36 @@ Provide factual category summaries:"""
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
         
-        # Define 15 criteria definitions
+        # Define criteria definitions
         criteria_definitions = {
-            "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
+            "debt_increase": "High: Debt is increased more than 30% compared to previous reported balance sheet number; Low: Debt increased less than 30% compared to previous reported balance sheet number",
             "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
-            "asset_decline": "High: Asset value falls by >=30% compared to previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
-            "receivable_days": "High: receivable days increase by >=30% compared to previous reported balance sheet number; Low: receivable days increase is less than 30% compared to previous reported balance sheet number",
-            "payable_days": "High: payable days increase by >=30% compared to previous reported balance sheet number; Low: payable days increase is less than 30% compared to previous reported balance sheet number",
-            "debt_ebitda": "High: Debt/EBITDA >= 3x; Low: Debt/EBITDA < 3x",
-            "revenue_decline": "High: revenue or profitability(profit before tax/profit after tax) falls by >=25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
-            "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 25% of current quarter's EBIDTA",
-            "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 25% compared to previous reported quarter number",
+            "asset_decline": "High: Asset value falls by more than 30% compared to the previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
+            "receivable_days": "High: receivable days OR debtor days are increased more than 30% compared to previous reported balance sheet number; Low: receivable days or debtor's days are increased but less than 30% compared to previous reported balance sheet number",
+            "payable_days": "High: payable days or creditors days increase by more than 30% compared to previous reported balance sheet number; Low: payable days or creditors days increase is less than 30% compared to previous reported balance sheet number",
+            "revenue_decline": "High: revenue falls by more than 25% compared to previous reported quarter number; Low: revenue falls by less than 25% compared to previous reported quarter number",
+            "profit_before_tax_decline": "High: profitability or profit before tax (PBT) falls by more than 25% compared to previous reported quarter number; Low: profitability or profit before tax (PBT) falls by less than 25% compared to previous reported quarter number",
+            "profit_after_tax_decline": "High: Profit after tax (PAT) falls by more than 25% compared to previous reported quarter number; Low: Profit after tax (PAT) falls by less than 25% compared to previous reported quarter number",
+            "EBIDTA_decline": "High: EBIDTA falls by more than 25% compared to previous reported quarter number; Low: EBIDTA falls by less than 25% compared to previous reported quarter number",
+            "margin_decline": "High: operating margin falling more than 25% compared to previous reported quarter number; Low: Operating margin falling less than 25% compared to previous reported quarter number",
             "cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number",
-            "short_term_debt": "High: Short-term debt or current liabilities increase by >=30% compared to previous reported balance sheet number; Low: Short-term debt or current liabilities increase is less than 30% compared to previous reported balance sheet number",
+            "short_term_borrowings": "High: Short-term borrowings or current liabilities increase by more than 30% compared to previous reported balance sheet number; Low: Short-term borrowings or current liabilities increase is less than 30% compared to previous reported balance sheet number",
+            "impairment": "High: Impairment or devaluation more than 25% of previous reported net worth from balance sheet; Low: Impairment or devaluation less than 25% of previous reported net worth from balance sheet.",
+            "receivables": "High: receivables or debtors are increased more than 30% compared to previous reported balance sheet number; Low: receivables or debtors are increase is less than 30% compared to previous reported balance sheet number",
+            "payables": "High: payables or creditors increase by greater than 30% compared to previous reported balance sheet number; Low: payables or creditors is less than 30% compared to previous reported balance sheet number",
+            "one-time_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 25% of current quarter's EBIDTA",
+            "debt_ebitda": "High: Debt/EBIDTA > 3x i.e. Debt to EBITDA ratio is above (greater than) three times; Low: Debt/EBITDA < 3x i.e. Debt to EBITDA ratio is less than three times",
+            "gross_margin": "High: gross margin falling more than 100bps (basis points) ; Low: gross margin falling less than 100bps (basis points)",
             "management_issues": "High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy; Low: If there is a no clear concern for the company basis the discussion on the management or strategy related issues",
             "regulatory_compliance": "High: If found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: If there is a no clear concern for the company basis the discussion on the regulatory issues",
             "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues",
-            "others": "High: Other issues not explicitly covered above that could impact the business; compare with company's current quarter EBITDA to decide significance; Low: No other issues or concerns"
+            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
         }
         
-        # Step 2: Classify each unique flag with ENHANCED criteria matching
-        classification_results = []
-        high_risk_flags = []
-        low_risk_flags = []
-        
-        if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
-            for i, flag in enumerate(unique_flags, 1):
-                try:
-                    classification = classify_flag_against_criteria_simple(
-                        flag=flag,
-                        criteria_definitions=criteria_definitions,
-                        previous_year_data=previous_year_data, 
-                        llm=llm
-                    )
-                    
-                    classification_results.append({
-                        'flag': flag,
-                        'matched_criteria': classification['matched_criteria'],
-                        'risk_level': classification['risk_level'],
-                        'reasoning': classification['reasoning']
-                    })
-                    
-                    # Add to appropriate risk category
-                    if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None'):
-                        high_risk_flags.append(flag)
-                    else:
-                        low_risk_flags.append(flag)
-                        
-                except Exception as e:
-                    logger.error(f"Error classifying flag {i}: {e}")
-                    # Always default to low risk if classification fails
-                    classification_results.append({
-                        'flag': flag,
-                        'matched_criteria': 'None',
-                        'risk_level': 'Low',
-                        'reasoning': f'Classification failed: {str(e)}'
-                    })
-                    low_risk_flags.append(flag)
-                  
-                time.sleep(0.3)
-        
-        risk_counts = {
-            'High': len(high_risk_flags),
-            'Low': len(low_risk_flags),
-            'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
-        }
-        
-        print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
-        print(f"High Risk Flags: {risk_counts['High']}")
-        print(f"Low Risk Flags: {risk_counts['Low']}")
-        print(f"Total Flags: {risk_counts['Total']}")
-        
-        if high_risk_flags:
-            print(f"\n--- HIGH RISK FLAGS ---")
-            for i, flag in enumerate(high_risk_flags, 1):
-                print(f"  {i}. {flag}")
-        else:
-            print(f"\n--- HIGH RISK FLAGS ---")
-            print("  No high risk flags identified")
-        
-        if low_risk_flags:
-            print(f"\n--- LOW RISK FLAGS ---")
-            for i, flag in enumerate(low_risk_flags, 1):
-                print(f"  {i}. {flag}")
-        else:
-            print(f"\n--- LOW RISK FLAGS ---")
-            print("  No low risk flags identified")
+        # Step 2: Classify each unique flag with CALCULATIONS and clean output
+        classification_results, high_risk_flags, low_risk_flags, risk_counts = process_flags_with_clean_output(
+            unique_flags, criteria_definitions, previous_year_data, llm
+        )
         
         # Extract company info and create Word document
         print("\nCreating Word document...")
@@ -1113,29 +1153,33 @@ def main():
     """Main function to process all PDFs in the specified folder"""
     
     # Configuration
-    pdf_folder_path = r"kalyan_pdf" 
+    pdf_folder_path = r"vedanta_pdf" 
     queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"kalyan_results_try2.2.0"
+    output_folder = r"vedanta_results_try2.2.0"
 
     api_key = "8496498c"
     azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1"
   
-    # Enhanced structured previous year data - converted to dictionary format
-    previous_year_data = {
-        'debt': {'value': 4486, 'period': 'Mar-24', 'unit': 'Cr'},
-        'ebitda': {'value': 412, 'period': 'Sept-24', 'unit': 'Cr'},
-        'asset_value': {'value': 12818, 'period': 'Mar-24', 'unit': 'Cr'},
-        'receivable_days': {'value': 6, 'period': 'Mar-24', 'unit': 'days'},
-        'payable_days': {'value': 45, 'period': 'Mar-24', 'unit': 'days'},
-        'revenue': {'value': 5535, 'period': 'June-24', 'unit': 'Cr'},
-        'profit_before_tax': {'value': 237, 'period': 'June-24', 'unit': 'Cr'},
-        'operating_margin': {'value': 7, 'period': 'June-24', 'unit': '%'},
-        'cash_balance': {'value': 975, 'period': 'Mar-24', 'unit': 'Cr'},
-        'current_liabilities': {'value': 3317, 'period': 'Mar-24', 'unit': 'Cr'}
-    }
-    
+    previous_year_data = """
+Debt as per Previous reported balance sheet number	Mar-23	80329Cr
+Current quarter ebidta	March-24	11511Cr
+Asset value as per previous reported balance sheet number	Mar-23	189455Cr
+Receivable days as per previous reported balance sheet number	Mar-23	10days
+Payable days as per Previous reported balance sheet number	Mar-23	91days
+Revenue as per previous reported quarter number	Dec-23	35541Cr
+profit before tax as per previous reported quarter number	Dec-23	4105Cr
+profit after tax as per previous reported quarter number	Dec-23	2868Cr
+EBIDTA as per previous reported quarter number	Dec-23	8531Cr
+Operating margin as per previous quarter number	Dec-23	25%
+Cash balance as per previous reported balance sheet number	Mar-23	9254Cr
+Short term borrowings as per the previous reported balance sheet number	Mar-23	36407Cr
+previous reported net worth from balance sheet	Mar-23	47896Cr
+Receivables as per previous reported balance sheet number	Mar-23	6414Cr
+Payables as per Previous reported balance sheet number	Mar-23	11043Cr
+
+"""
     os.makedirs(output_folder, exist_ok=True)
     
     # Process all PDFs in folder
