@@ -260,11 +260,7 @@ def generate_summary_for_all_flags(all_flags: List[str], context: str, llm: Azur
     """Generate summaries for ALL flags before classification"""
     flag_summaries = []
     
-    print(f"\nGenerating summaries for {len(all_flags)} flags...")
-    
     for i, flag in enumerate(all_flags, 1):
-        print(f"  Processing flag {i}/{len(all_flags)}: {flag[:50]}...")
-        
         prompt = f"""Based on the original PDF context, create a detailed summary for this flag.
 
 ORIGINAL PDF CONTEXT:
@@ -1000,14 +996,10 @@ Provide factual category summaries:"""
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
         
-        # Step 2: NEW - Generate detailed summaries for ALL flags BEFORE classification
-        print("Step 2: Generating detailed summaries for all flags...")
+        # Step 2: Generate detailed summaries for ALL flags BEFORE classification
         flag_summaries = generate_summary_for_all_flags(unique_flags, context, llm)
         
-        # Step 3: NEW - Enhanced classification using flag + summary + previous year data
-        print("Step 3: Classifying flags with detailed comparison against previous year data...")
-        
-        # Define 15 criteria definitions (SAME AS BEFORE)
+        # Step 3: Enhanced classification using flag + summary + previous year data
         criteria_definitions = {
             "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
             "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
@@ -1031,10 +1023,7 @@ Provide factual category summaries:"""
         high_risk_flags = []
         low_risk_flags = []
         
-        print("Processing each flag for classification...")
         for i, summary_data in enumerate(flag_summaries, 1):
-            print(f"  Classifying flag {i}/{len(flag_summaries)}: {summary_data['flag'][:50]}...")
-            
             try:
                 classification = classify_flag_with_detailed_comparison(
                     flag=summary_data['flag'],
@@ -1068,7 +1057,7 @@ Provide factual category summaries:"""
             
             time.sleep(0.3)  # Rate limiting
         
-        # Step 4: NEW - Print detailed comparison table
+        # Step 4: Print comparison table with previous year data
         print_detailed_comparison_table(flag_summaries, classification_results)
         
         # Calculate risk counts
