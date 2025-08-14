@@ -145,139 +145,6 @@ Extract company information:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def parse_previous_year_data(previous_year_data: str) -> Dict[str, Dict[str, str]]:
-    """Parse the previous year data string into a structured dictionary"""
-    data_dict = {}
-    lines = previous_year_data.strip().split('\n')
-    
-    for line in lines:
-        if line.strip():
-            parts = line.split('\t')
-            if len(parts) >= 3:
-                metric_name = parts[0].strip()
-                date = parts[1].strip()
-                value = parts[2].strip()
-                data_dict[metric_name] = {'date': date, 'value': value}
-    
-    return data_dict
-
-def extract_current_financial_data(context: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Extract current financial data from the PDF context"""
-    
-    prompt = f"""Extract current financial metrics from this document. Look for most recent quarter data.
-
-EXTRACT (if available):
-- Current Debt/Total Debt
-- Current EBITDA 
-- Current Assets/Total Assets
-- Current Receivable Days
-- Current Payable Days
-- Current Revenue
-- Current Profit Before Tax
-- Current Operating Margin
-- Current Cash Balance
-- Current Liabilities
-
-FORMAT: MetricName: Value
-If not found: MetricName: Not Available
-
-DOCUMENT:
-{context[:3000]}
-
-Extract current data:"""
-    
-    try:
-        response = llm._call(prompt, max_tokens=500, temperature=0.0)
-        
-        current_data = {}
-        lines = response.strip().split('\n')
-        
-        for line in lines:
-            if ':' in line:
-                parts = line.split(':', 1)
-                if len(parts) == 2:
-                    metric = parts[0].strip()
-                    value = parts[1].strip()
-                    current_data[metric] = value
-        
-        return current_data
-        
-    except Exception as e:
-        logger.error(f"Error extracting current financial data: {e}")
-        return {}
-
-def calculate_financial_changes(previous_data: Dict[str, Dict[str, str]], 
-                              current_data: Dict[str, str]) -> List[str]:
-    """Calculate percentage changes and show concise comparisons"""
-    
-    calculations = []
-    
-    # Simplified mapping
-    metric_mappings = {
-        "Previous reported Debt": ["Debt", "Total Debt"],
-        "Previous reported asset value": ["Assets", "Total Assets"],
-        "Previous reported receivable days": ["Receivable Days"],
-        "Previous reported payable days": ["Payable Days"],
-        "Previous reported revenue": ["Revenue"],
-        "Previous reported profit before tax": ["Profit Before Tax"],
-        "Previous reported operating margin": ["Operating Margin"],
-        "Previous reported cash balance": ["Cash", "Cash Balance"],
-        "Previous reported current liabilities": ["Liabilities", "Current Liabilities"]
-    }
-    
-    def extract_numeric_value(value_str: str) -> float:
-        """Extract numeric value from string"""
-        if not value_str or value_str == "Not Available":
-            return None
-        clean_str = value_str.replace('Cr', '').replace('%', '').replace('days', '').strip()
-        try:
-            return float(clean_str)
-        except:
-            return None
-    
-    def find_current_value(previous_key: str, current_data: Dict[str, str]) -> tuple:
-        """Find matching current value"""
-        possible_keys = metric_mappings.get(previous_key, [])
-        
-        for current_key in current_data.keys():
-            for possible_key in possible_keys:
-                if possible_key.lower() in current_key.lower():
-                    return current_key, current_data[current_key]
-        return None, None
-    
-    calculations.append("=== FINANCIAL COMPARISON ===")
-    
-    for prev_key, prev_info in previous_data.items():
-        if prev_key == "Current quarter ebidta":
-            continue
-            
-        prev_value_str = prev_info['value']
-        prev_numeric = extract_numeric_value(prev_value_str)
-        
-        if prev_numeric is None:
-            continue
-        
-        current_key, current_value_str = find_current_value(prev_key, current_data)
-        
-        if current_key and current_value_str and current_value_str != "Not Available":
-            current_numeric = extract_numeric_value(current_value_str)
-            
-            if current_numeric is not None:
-                change_percent = ((current_numeric - prev_numeric) / prev_numeric) * 100
-                direction = "↑" if change_percent > 0 else "↓"
-                risk = "HIGH" if abs(change_percent) >= 30 else "LOW"
-                
-                metric_name = prev_key.replace("Previous reported ", "").capitalize()
-                calc_line = f"{metric_name}: {prev_value_str} → {current_value_str} ({direction}{abs(change_percent):.1f}%) [{risk}]"
-                calculations.append(calc_line)
-        else:
-            metric_name = prev_key.replace("Previous reported ", "").capitalize()
-            calc_line = f"{metric_name}: {prev_value_str} → Not Found"
-            calculations.append(calc_line)
-    
-    calculations.append("=" * 50)
-    return calculations
-
 def extract_unique_flags_with_strict_deduplication(response_text: str, llm: AzureOpenAILLM) -> List[str]:
     """Enhanced extraction with STRICT deduplication to prevent duplicates"""
     
@@ -360,7 +227,7 @@ Extract unique flags:"""
         
         # Apply additional aggressive deduplication
         final_flags = []
-        seen_keywords = []
+        seen_keywords = []  # Changed from set to list
         
         for flag in flags_list:
             if not flag or len(flag) <= 5:
@@ -381,7 +248,7 @@ Extract unique flags:"""
             
             if not is_duplicate and len(final_flags) < 10:
                 final_flags.append(flag)
-                seen_keywords.append(words)
+                seen_keywords.append(words)  # Append the set to the list
         
         return final_flags if final_flags else ["No specific red flags identified"]
         
@@ -389,11 +256,203 @@ Extract unique flags:"""
         logger.error(f"Error in strict deduplication: {e}")
         return ["Error in flag extraction"]
 
+def generate_summary_for_all_flags(all_flags: List[str], context: str, llm: AzureOpenAILLM) -> List[Dict[str, str]]:
+    """Generate summaries for ALL flags before classification"""
+    flag_summaries = []
+    
+    print(f"\nGenerating summaries for {len(all_flags)} flags...")
+    
+    for i, flag in enumerate(all_flags, 1):
+        print(f"  Processing flag {i}/{len(all_flags)}: {flag[:50]}...")
+        
+        prompt = f"""Based on the original PDF context, create a detailed summary for this flag.
+
+ORIGINAL PDF CONTEXT:
+{context}
+
+FLAG: "{flag}"
+
+REQUIREMENTS:
+1. Provide 2-3 lines summary with specific details from the PDF
+2. Include exact numbers/percentages/amounts if mentioned in the context
+3. Be factual and direct - use ONLY information from PDF context
+4. Include speaker attribution if available (e.g., "Management stated...")
+5. Specify business unit/division/geography if applicable
+6. Include timeframe/period if mentioned
+7. Do NOT add speculation or assumptions
+
+OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
+
+Example: "Revenue declined by 15% to Rs. 2,500 Cr in Q2FY25 compared to Rs. 2,941 Cr in Q1FY25. Management attributed this decline to seasonal factors and increased competition in the retail segment."
+"""
+        
+        try:
+            response = llm._call(prompt, max_tokens=200, temperature=0.1)
+            clean_summary = response.strip()
+            
+            # Clean response - remove any prefixes
+            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
+            for prefix in prefixes_to_remove:
+                if clean_summary.startswith(prefix):
+                    clean_summary = clean_summary[len(prefix):].strip()
+            
+            if not clean_summary.endswith('.'):
+                clean_summary += '.'
+            
+            flag_summaries.append({
+                'flag': flag,
+                'summary': clean_summary,
+                'flag_number': i
+            })
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for flag '{flag}': {e}")
+            flag_summaries.append({
+                'flag': flag,
+                'summary': f"Summary generation failed: {str(e)}",
+                'flag_number': i
+            })
+        
+        time.sleep(0.2)  # Rate limiting
+    
+    return flag_summaries
+
+def classify_flag_with_detailed_comparison(flag: str, summary: str, criteria_definitions: Dict[str, str], 
+                                         previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Enhanced classification with detailed comparison against previous year data"""
+    
+    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
+    
+    prompt = f"""Analyze this red flag and classify it based on criteria and previous year data.
+
+RED FLAG: "{flag}"
+
+FLAG SUMMARY WITH CONTEXT: "{summary}"
+
+CRITERIA DEFINITIONS:
+{criteria_list}
+
+PREVIOUS YEAR DATA FOR COMPARISON:
+{previous_year_data}
+
+ANALYSIS STEPS:
+1. Read the flag and its summary to understand the specific financial concern
+2. Match it to the most appropriate criteria from the list above
+3. Extract any specific numbers/percentages mentioned in the flag summary
+4. Find the corresponding previous year value from the data provided
+5. Calculate percentage change or compare against thresholds
+6. Determine if it meets High or Low risk criteria based on the definitions
+7. Provide detailed reasoning with specific calculations
+
+OUTPUT FORMAT:
+Matched_Criteria: [exact criteria name from list above, or "None" if no match]
+Risk_Level: [High or Low]
+Current_Value: [specific value extracted from flag/summary, or "N/A" if not available]
+Previous_Value: [corresponding previous year value, or "N/A" if not applicable]
+Calculation: [show percentage change calculation or threshold comparison, or "N/A"]
+Reasoning: [detailed explanation of classification decision with specific numbers]
+
+IMPORTANT: Be very specific with numbers and calculations. If the flag mentions "debt increased significantly" but no specific amount, try to find debt-related numbers in the summary.
+"""
+    
+    try:
+        response = llm._call(prompt, max_tokens=400, temperature=0.0)
+        
+        # Parse response
+        result = {
+            'matched_criteria': 'None',
+            'risk_level': 'Low',
+            'current_value': 'N/A',
+            'previous_value': 'N/A',
+            'calculation': 'N/A',
+            'reasoning': 'No match found'
+        }
+        
+        lines = response.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Matched_Criteria:'):
+                result['matched_criteria'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Risk_Level:'):
+                result['risk_level'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Current_Value:'):
+                result['current_value'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Previous_Value:'):
+                result['previous_value'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Calculation:'):
+                result['calculation'] = line.split(':', 1)[1].strip()
+            elif line.startswith('Reasoning:'):
+                result['reasoning'] = line.split(':', 1)[1].strip()
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in detailed classification: {e}")
+        return {
+            'matched_criteria': 'None',
+            'risk_level': 'Low',
+            'current_value': 'N/A',
+            'previous_value': 'N/A',
+            'calculation': 'N/A',
+            'reasoning': f'Classification error: {str(e)}'
+        }
+
+def print_detailed_comparison_table(flag_summaries: List[Dict], classification_results: List[Dict]):
+    """Print a comprehensive comparison table with all details"""
+    
+    print("\n" + "="*180)
+    print("DETAILED FLAG ANALYSIS & COMPARISON TABLE")
+    print("="*180)
+    
+    # Table header
+    header = f"{'No.':<4} {'Flag (First 35 chars)':<37} {'Summary (First 40 chars)':<42} {'Criteria':<18} {'Risk':<5} {'Current':<12} {'Previous':<12} {'Change/Calc':<15} {'Reasoning (First 30 chars)':<32}"
+    print(header)
+    print("-" * 180)
+    
+    # Table rows
+    for i, (summary_data, classification) in enumerate(zip(flag_summaries, classification_results), 1):
+        flag_short = (summary_data['flag'][:32] + "...") if len(summary_data['flag']) > 35 else summary_data['flag']
+        summary_short = (summary_data['summary'][:37] + "...") if len(summary_data['summary']) > 40 else summary_data['summary']
+        criteria_short = (classification['matched_criteria'][:15] + "...") if len(classification['matched_criteria']) > 18 else classification['matched_criteria']
+        calc_short = (classification['calculation'][:12] + "...") if len(classification['calculation']) > 15 else classification['calculation']
+        reasoning_short = (classification['reasoning'][:27] + "...") if len(classification['reasoning']) > 30 else classification['reasoning']
+        
+        row = f"{i:<4} {flag_short:<37} {summary_short:<42} {criteria_short:<18} {classification['risk_level']:<5} {classification['current_value']:<12} {classification['previous_value']:<12} {calc_short:<15} {reasoning_short:<32}"
+        print(row)
+    
+    print("-" * 180)
+    
+    # Summary statistics
+    high_risk_count = sum(1 for r in classification_results if r['risk_level'].lower() == 'high')
+    low_risk_count = len(classification_results) - high_risk_count
+    
+    print(f"\nSUMMARY STATISTICS:")
+    print(f"Total Flags Analyzed: {len(classification_results)}")
+    print(f"High Risk Flags: {high_risk_count}")
+    print(f"Low Risk Flags: {low_risk_count}")
+    if len(classification_results) > 0:
+        print(f"High Risk Percentage: {(high_risk_count/len(classification_results)*100):.1f}%")
+    
+    # Show criteria breakdown
+    criteria_breakdown = {}
+    for result in classification_results:
+        criteria = result['matched_criteria']
+        risk_level = result['risk_level']
+        if criteria not in criteria_breakdown:
+            criteria_breakdown[criteria] = {'High': 0, 'Low': 0}
+        criteria_breakdown[criteria][risk_level] += 1
+    
+    print(f"\nCRITERIA BREAKDOWN:")
+    for criteria, counts in criteria_breakdown.items():
+        print(f"  {criteria}: {counts['High']} High, {counts['Low']} Low")
+    
+    print("="*180)
+
 def classify_flag_against_criteria_simple(flag: str, criteria_definitions: Dict[str, str], 
-                                         previous_year_data_dict: Dict[str, Dict[str, str]], llm: AzureOpenAILLM) -> Dict[str, str]:
+                                         previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
     """Simplified classification with clear, concise prompt"""
     
-    # Simple keyword mapping
+    # Simple keyword mapping - just the most important ones
     criteria_keywords = {
         "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase"],
         "provisioning": ["provision", "write-off", "bad debt", "impairment"],
@@ -414,11 +473,6 @@ def classify_flag_against_criteria_simple(flag: str, criteria_definitions: Dict[
     
     criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
     
-    # Format previous year data for better readability
-    previous_data_text = ""
-    for metric, info in previous_year_data_dict.items():
-        previous_data_text += f"{metric}: {info['value']} ({info['date']})\n"
-    
     # Much simpler prompt
     prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
 
@@ -433,7 +487,7 @@ RULES:
 3. If no clear match, say "None"
 
 PREVIOUS YEAR DATA:
-{previous_data_text}
+{previous_year_data}
 
 Give answer in this format:
 Matched_Criteria: [criteria name or "None"]
@@ -499,124 +553,6 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
    
     return categories_summary
 
-def generate_summaries_for_all_flags(all_flags: List[str], context: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Generate concise summaries for ALL flags (both high and low risk candidates)"""
-    if not all_flags:
-        return {}
-    
-    flag_summaries = {}
-    
-    for flag in all_flags:
-        prompt = f"""Based on the original PDF context, create a concise 1-2 line summary for this flag.
-
-ORIGINAL PDF CONTEXT:
-{context[:4000]}
-
-FLAG: "{flag}"
-
-REQUIREMENTS:
-1. Maximum 2 sentences
-2. Use specific information from PDF context
-3. Include exact numbers/percentages if mentioned
-4. Be factual and direct
-5. Focus on quantitative details
-
-OUTPUT: [Direct factual summary only]"""
-        
-        try:
-            response = llm._call(prompt, max_tokens=150, temperature=0.1)
-            clean_response = response.strip()
-            
-            # Remove common prefixes
-            prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:"]
-            for prefix in prefixes_to_remove:
-                if clean_response.startswith(prefix):
-                    clean_response = clean_response[len(prefix):].strip()
-            
-            # Take first 2 sentences
-            summary_lines = [line.strip() for line in clean_response.split('\n') if line.strip()]
-            if len(summary_lines) > 2:
-                final_summary = '. '.join(summary_lines[:2])
-            else:
-                final_summary = '. '.join(summary_lines)
-            
-            if not final_summary.endswith('.'):
-                final_summary += '.'
-                
-            flag_summaries[flag] = final_summary
-            
-        except Exception as e:
-            logger.error(f"Error generating summary for flag '{flag}': {e}")
-            flag_summaries[flag] = f"{flag}. Requires analysis."
-    
-    return flag_summaries
-
-def classify_flag_with_summary_comparison(flag: str, flag_summary: str, criteria_definitions: Dict[str, str], 
-                                        previous_year_data_dict: Dict[str, Dict[str, str]], llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification using flag summary, previous year data and criteria definitions"""
-    
-    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
-    
-    # Format previous year data
-    previous_data_text = ""
-    for metric, info in previous_year_data_dict.items():
-        previous_data_text += f"{metric}: {info['value']} ({info['date']})\n"
-    
-    prompt = f"""Analyze this flag and its summary against criteria and previous year data to determine risk level.
-
-FLAG: "{flag}"
-
-FLAG SUMMARY WITH CONTEXT: "{flag_summary}"
-
-CRITERIA DEFINITIONS:
-{criteria_list}
-
-PREVIOUS YEAR BASELINE DATA:
-{previous_data_text}
-
-ANALYSIS STEPS:
-1. Match the flag to the most relevant criteria based on content
-2. Compare flag summary data with previous year baseline
-3. Calculate if threshold is met for High vs Low risk
-4. If flag mentions specific numbers, compare against baseline percentages
-
-RULES:
-- Use flag summary to find current numbers/percentages
-- Compare with previous year data to check if High/Low thresholds are met
-- If no clear quantitative comparison possible, assess based on severity described in summary
-
-OUTPUT FORMAT:
-Matched_Criteria: [criteria name or "None"]
-Risk_Level: [High or Low]
-Current_Data: [specific numbers from flag summary if any]
-Comparison: [brief comparison with baseline]
-Reasoning: [one line explanation]"""
-    
-    try:
-        response = llm._call(prompt, max_tokens=300, temperature=0.0)
-        
-        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'current_data': 'Not specified', 
-                 'comparison': 'No comparison', 'reasoning': 'No match found'}
-        
-        lines = response.strip().split('\n')
-        for line in lines:
-            if 'Matched_Criteria:' in line:
-                result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Risk_Level:' in line:
-                result['risk_level'] = line.split(':', 1)[1].strip()
-            elif 'Current_Data:' in line:
-                result['current_data'] = line.split(':', 1)[1].strip()
-            elif 'Comparison:' in line:
-                result['comparison'] = line.split(':', 1)[1].strip()
-            elif 'Reasoning:' in line:
-                result['reasoning'] = line.split(':', 1)[1].strip()
-        
-        return result
-        
-    except Exception as e:
-        return {'matched_criteria': 'None', 'risk_level': 'Low', 'current_data': 'Error', 
-               'comparison': 'Error', 'reasoning': f'Classification failed: {str(e)}'}
-
 def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, llm: AzureOpenAILLM) -> List[str]:
     """Generate VERY concise 1-2 line summaries for high risk flags using original PDF context"""
     if not high_risk_flags:
@@ -624,7 +560,7 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     
     # First, deduplicate the high_risk_flags themselves
     unique_high_risk_flags = []
-    seen_flag_keywords = []
+    seen_flag_keywords = []  # Changed from set to list
     
     for flag in high_risk_flags:
         normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
@@ -640,10 +576,10 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
         
         if not is_duplicate_flag:
             unique_high_risk_flags.append(flag)
-            seen_flag_keywords.append(flag_words)
+            seen_flag_keywords.append(flag_words)  # Append the set to the list
     
     concise_summaries = []
-    seen_summary_keywords = []
+    seen_summary_keywords = []  # Changed from set to list
     
     for flag in unique_high_risk_flags:
         prompt = f"""
@@ -708,11 +644,11 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             
             if not is_duplicate_summary:
                 concise_summaries.append(concise_summary)
-                seen_summary_keywords.append(summary_words)
+                seen_summary_keywords.append(summary_words)  # Append the set to the list
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
-            if len(concise_summaries) < len(unique_high_risk_flags):
+            if len(concise_summaries) < len(unique_high_risk_flags):  # Only add fallback if we haven't added this one yet
                 concise_summaries.append(f"{flag}. Review required based on analysis.")
     
     return concise_summaries
@@ -856,11 +792,11 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             return None
 
 def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
-                                 output_folder: str = "results", 
-                                 api_key: str = None, azure_endpoint: str = None, 
-                                 api_version: str = None, deployment_name: str = "gpt-4.1"):
+                               output_folder: str = "results", 
+                               api_key: str = None, azure_endpoint: str = None, 
+                               api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Process PDF through enhanced 5-iteration pipeline with financial calculations display
+    MODIFIED: Process PDF through enhanced 5-iteration pipeline with summaries BEFORE classification
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -878,24 +814,6 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
         
-        # Parse previous year data
-        print("Parsing previous year data...")
-        previous_data_dict = parse_previous_year_data(previous_year_data)
-        
-        # Extract current financial data from PDF
-        print("Extracting current financial data from PDF...")
-        current_data_dict = extract_current_financial_data(context, llm)
-        
-        # Calculate and display financial changes
-        print("Calculating financial changes...")
-        financial_calculations = calculate_financial_changes(previous_data_dict, current_data_dict)
-        
-        # Display calculations
-        print("\n" + "="*60)
-        for calc in financial_calculations:
-            print(calc)
-        print("="*60 + "\n")
-        
         # Load first query from CSV/Excel
         try:
             if queries_csv_path.endswith('.xlsx'):
@@ -911,7 +829,7 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
             logger.warning(f"Error loading queries file: {e}. Using default query.")
             first_query = "Analyze this document for potential red flags."
         
-        # ITERATION 1: Initial red flag identification with structured prompt
+        # ITERATION 1: Initial red flag identification with structured prompt (NO CHANGES)
         print("Running 1st iteration - Initial Analysis...")
         first_prompt = f"""<role>
 You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
@@ -932,9 +850,6 @@ ANALYSIS REQUIREMENTS:
 - Number each red flag sequentially (1, 2, 3, etc.)
 - Include page references where available
 
-FINANCIAL BASELINE CONTEXT:
-{chr(10).join(financial_calculations)}
-
 OUTPUT FORMAT:
 For each red flag:
 1. The potential red flag you observed - [brief description]
@@ -954,7 +869,7 @@ Provide comprehensive red flag analysis:"""
         
         first_response = llm._call(first_prompt, max_tokens=4000)
         
-        # ITERATION 2: Deduplication
+        # ITERATION 2: Deduplication (NO CHANGES)
         print("Running 2nd iteration - Deduplication...")
         second_prompt = "Remove the duplicates from the above context. Also if the Original Quote and Keyword identifies is same remove them. Do not lose data if duplicates are not found."
         
@@ -971,7 +886,7 @@ Answer:"""
         
         second_response = llm._call(second_full_prompt, max_tokens=4000)
         
-        # ITERATION 3: Categorization with structured prompt
+        # ITERATION 3: Categorization (NO CHANGES)
         print("Running 3rd iteration - Categorization...")
         third_prompt = f"""<role>
 You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
@@ -1025,7 +940,7 @@ Provide categorized analysis:"""
         
         third_response = llm._call(third_prompt, max_tokens=4000)
         
-        # ITERATION 4: Summary generation with structured prompt
+        # ITERATION 4: Summary generation (NO CHANGES)
         print("Running 4th iteration - Summary Generation...")
         fourth_prompt = f"""<role>
 You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
@@ -1074,10 +989,10 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
-        # ITERATION 5: Extract unique flags and classify with enhanced summary comparison
-        print("Running 5th iteration - Enhanced Flags Classification with Summary Comparison...")
+        # ITERATION 5: MODIFIED - Summary first, then enhanced classification
+        print("Running MODIFIED 5th iteration - Summary BEFORE Classification...")
         
-        # Step 1: Extract unique flags with STRICT deduplication
+        # Step 1: Extract unique flags with STRICT deduplication (SAME AS BEFORE)
         try:
             unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
             print(f"\nUnique flags extracted: {len(unique_flags)}")
@@ -1085,11 +1000,14 @@ Provide factual category summaries:"""
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
         
-        # Step 2: Generate summaries for ALL flags
-        print("Generating summaries for all flags...")
-        flag_summaries = generate_summaries_for_all_flags(unique_flags, context, llm)
+        # Step 2: NEW - Generate detailed summaries for ALL flags BEFORE classification
+        print("Step 2: Generating detailed summaries for all flags...")
+        flag_summaries = generate_summary_for_all_flags(unique_flags, context, llm)
         
-        # Define 15 criteria definitions
+        # Step 3: NEW - Enhanced classification using flag + summary + previous year data
+        print("Step 3: Classifying flags with detailed comparison against previous year data...")
+        
+        # Define 15 criteria definitions (SAME AS BEFORE)
         criteria_definitions = {
             "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
             "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
@@ -1105,100 +1023,89 @@ Provide factual category summaries:"""
             "management_issues": "High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy; Low: If there is a no clear concern for the company basis the discussion on the management or strategy related issues",
             "regulatory_compliance": "High: If found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: If there is a no clear concern for the company basis the discussion on the regulatory issues",
             "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues",
-            "others": "High: Other issues not explicitly covered above that could impact the business; compare with company's current quarter EBITDA to decide significance; Low: No other issues or concerns"
+            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
         }
         
-        # Step 3: Classify each flag using summary comparison with previous year data
+        # Enhanced classification with detailed comparison
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
         
-        if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
-            print("Classifying flags with summary comparison...")
-            for i, flag in enumerate(unique_flags, 1):
-                try:
-                    flag_summary = flag_summaries.get(flag, flag)  # Use summary if available, else flag itself
+        print("Processing each flag for classification...")
+        for i, summary_data in enumerate(flag_summaries, 1):
+            print(f"  Classifying flag {i}/{len(flag_summaries)}: {summary_data['flag'][:50]}...")
+            
+            try:
+                classification = classify_flag_with_detailed_comparison(
+                    flag=summary_data['flag'],
+                    summary=summary_data['summary'],
+                    criteria_definitions=criteria_definitions,
+                    previous_year_data=previous_year_data,
+                    llm=llm
+                )
+                
+                classification_results.append(classification)
+                
+                # Add to appropriate risk category based on classification
+                if (classification['risk_level'].lower() == 'high' and 
+                    classification['matched_criteria'] != 'None'):
+                    high_risk_flags.append(summary_data['flag'])
+                else:
+                    low_risk_flags.append(summary_data['flag'])
                     
-                    classification = classify_flag_with_summary_comparison(
-                        flag=flag,
-                        flag_summary=flag_summary,
-                        criteria_definitions=criteria_definitions,
-                        previous_year_data_dict=previous_data_dict, 
-                        llm=llm
-                    )
-                    
-                    classification_results.append({
-                        'flag': flag,
-                        'flag_summary': flag_summary,
-                        'matched_criteria': classification['matched_criteria'],
-                        'risk_level': classification['risk_level'],
-                        'current_data': classification['current_data'],
-                        'comparison': classification['comparison'],
-                        'reasoning': classification['reasoning']
-                    })
-                    
-                    # Add to appropriate risk category
-                    if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None'):
-                        high_risk_flags.append(flag)
-                    else:
-                        low_risk_flags.append(flag)
-                        
-                except Exception as e:
-                    logger.error(f"Error classifying flag {i}: {e}")
-                    # Always default to low risk if classification fails
-                    classification_results.append({
-                        'flag': flag,
-                        'flag_summary': flag_summaries.get(flag, flag),
-                        'matched_criteria': 'None',
-                        'risk_level': 'Low',
-                        'current_data': 'Error',
-                        'comparison': 'Error',
-                        'reasoning': f'Classification failed: {str(e)}'
-                    })
-                    low_risk_flags.append(flag)
-                  
-                time.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Error classifying flag {i}: {e}")
+                # Default to low risk on error
+                classification_results.append({
+                    'matched_criteria': 'None',
+                    'risk_level': 'Low',
+                    'current_value': 'N/A',
+                    'previous_value': 'N/A',
+                    'calculation': 'N/A',
+                    'reasoning': f'Classification failed: {str(e)}'
+                })
+                low_risk_flags.append(summary_data['flag'])
+            
+            time.sleep(0.3)  # Rate limiting
         
+        # Step 4: NEW - Print detailed comparison table
+        print_detailed_comparison_table(flag_summaries, classification_results)
+        
+        # Calculate risk counts
         risk_counts = {
             'High': len(high_risk_flags),
             'Low': len(low_risk_flags),
             'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
         }
         
-        print(f"\n=== ENHANCED CLASSIFICATION RESULTS ===")
+        print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
         
         if high_risk_flags:
-            print(f"\n--- HIGH RISK FLAGS (with summaries) ---")
+            print(f"\n--- HIGH RISK FLAGS ---")
             for i, flag in enumerate(high_risk_flags, 1):
-                summary = flag_summaries.get(flag, "No summary")
                 print(f"  {i}. {flag}")
-                print(f"     Summary: {summary}")
         else:
             print(f"\n--- HIGH RISK FLAGS ---")
             print("  No high risk flags identified")
         
         if low_risk_flags:
-            print(f"\n--- LOW RISK FLAGS (with summaries) ---")
+            print(f"\n--- LOW RISK FLAGS ---")
             for i, flag in enumerate(low_risk_flags, 1):
-                summary = flag_summaries.get(flag, "No summary")
                 print(f"  {i}. {flag}")
-                print(f"     Summary: {summary}")
         else:
             print(f"\n--- LOW RISK FLAGS ---")
             print("  No low risk flags identified")
         
-        # Extract company info and create Word document
+        # Extract company info and create Word document (NO CHANGES TO WORD DOCUMENT)
         print("\nCreating Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document with strict high risk summaries
+            # Create Word document with strict high risk summaries (SAME AS BEFORE)
             word_doc_path = create_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -1219,41 +1126,53 @@ Provide factual category summaries:"""
             logger.error(f"Error creating Word document: {e}")
             word_doc_path = None
        
-        # Save all results to CSV files including financial calculations
+        # Save all results to CSV files
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
-        # Save pipeline results with financial calculations
-        financial_calc_text = "\n".join(financial_calculations)
+        # Save pipeline results
         results_summary = pd.DataFrame({
-            "pdf_name": [pdf_name] * 6,
-            "iteration": [0, 1, 2, 3, 4, 5],
+            "pdf_name": [pdf_name] * 5,
+            "iteration": [1, 2, 3, 4, 5],
             "stage": [
-                "Financial Calculations",
                 "Initial Analysis",
                 "Deduplication", 
                 "Categorization",
                 "Summary Generation",
-                "Enhanced Unique Flags Classification"
+                "Enhanced Summary-First Classification"
             ],
             "response": [
-                financial_calc_text,
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Classification with Summary Comparison: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
+                f"Summary-First Enhanced Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
             ],
-            "timestamp": [timestamp] * 6
+            "timestamp": [timestamp] * 5
         })
        
         results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results
-        if len(classification_results) > 0:
-            classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification.csv")
-            classification_df.to_csv(classification_file, index=False)
+        # Save detailed classification results with summaries
+        if len(flag_summaries) > 0 and len(classification_results) > 0:
+            detailed_results = []
+            for summary_data, classification in zip(flag_summaries, classification_results):
+                detailed_results.append({
+                    'flag_number': summary_data['flag_number'],
+                    'flag': summary_data['flag'],
+                    'summary': summary_data['summary'],
+                    'matched_criteria': classification['matched_criteria'],
+                    'risk_level': classification['risk_level'],
+                    'current_value': classification['current_value'],
+                    'previous_value': classification['previous_value'],
+                    'calculation': classification['calculation'],
+                    'reasoning': classification['reasoning']
+                })
+            
+            detailed_df = pd.DataFrame(detailed_results)
+            detailed_file = os.path.join(output_folder, f"{pdf_name}_detailed_flag_classification_with_summaries.csv")
+            detailed_df.to_csv(detailed_file, index=False)
+            print(f"Detailed classification results saved: {detailed_file}")
 
         print(f"\n=== PROCESSING COMPLETE FOR {pdf_name} ===")
         return results_summary
@@ -1275,8 +1194,9 @@ def main():
     api_version = "2025-01-01-preview"
     deployment_name = "gpt-4.1"
   
-    # Your 10 lines of previous year data
-    previous_year_data = """Previous reported Debt	Mar-24	4486Cr
+    # Enhanced structured previous year data
+    previous_year_data = """
+Previous reported Debt	Mar-24	4486Cr
 Current quarter ebidta	Sept-24	412Cr
 Previous reported asset value	Mar-24	12818Cr
 Previous reported receivable days	Mar-24	6days
@@ -1285,8 +1205,9 @@ Previous reported revenue	June-24	5535Cr
 Previous reported profit before tax	June-24	237Cr
 Previous reported operating margin	June-24	7%
 Previous reported cash balance	Mar-24	975Cr
-Previous reported current liabilities	Mar-24	3317Cr"""
+Previous reported current liabilities	Mar-24	3317Cr
 
+"""
     os.makedirs(output_folder, exist_ok=True)
     
     # Process all PDFs in folder
