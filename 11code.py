@@ -258,7 +258,26 @@ Extract unique flags:"""
 
 def classify_flag_with_percentage_calculation(flag: str, criteria_definitions: Dict[str, str], 
                                             previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification with percentage calculation and detailed output"""
+    """Enhanced classification with percentage calculation, keyword fallback, and default to Low risk"""
+    
+    # Simple keyword mapping for fallback and validation
+    criteria_keywords = {
+        "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase"],
+        "provisioning": ["provision", "write-off", "bad debt", "impairment"],
+        "asset_decline": ["asset decline", "asset fall", "asset decrease"],
+        "receivable_days": ["receivable days", "collection period", "DSO"],
+        "payable_days": ["payable days", "payment period", "DPO"],
+        "debt_ebitda": ["debt to ebitda", "leverage ratio", "debt multiple"],
+        "revenue_decline": ["revenue decline", "sales decline", "revenue fall"],
+        "onetime_expenses": ["one-time", "exceptional", "non-recurring"],
+        "margin_decline": ["margin decline", "margin pressure", "profitability decline"],
+        "cash_balance": ["cash decline", "liquidity issue", "cash shortage"],
+        "short_term_debt": ["short-term debt", "current liabilities"],
+        "management_issues": ["management change", "CEO", "CFO", "resignation", "manpower"],
+        "regulatory_compliance": ["regulatory", "compliance", "penalty", "violation"],
+        "market_competition": ["competition", "market share", "competitor"],
+        "operational_disruptions": ["operational", "supply chain", "production issues"]
+    }
     
     prompt = f"""<role>
 You are an expert financial analyst specializing in quantitative risk assessment with deep knowledge of financial metrics and percentage calculations.
@@ -284,7 +303,7 @@ ANALYSIS REQUIREMENTS:
 2. Match with corresponding previous year baseline values
 3. Calculate exact percentage change: ((Current - Previous) / Previous) × 100
 4. Determine risk level based on criteria thresholds
-5. If no numerical data can be extracted or matched, classify as "Not Found"
+5. If no numerical data can be extracted, still try to match criteria and default to Low risk
 
 CALCULATION EXAMPLES:
 - Debt increase from 4486Cr to 6000Cr = ((6000-4486)/4486)×100 = 33.7% increase → High Risk (≥30%)
@@ -295,14 +314,15 @@ Matched_Criteria: [criteria name or "None"]
 Previous_Value: [previous year value with units or "Not Found"]
 Current_Value: [current value with units or "Not Found"] 
 Percentage_Change: [exact percentage with + or - sign or "Not Found"]
-Risk_Level: [High or Low or "Not Found"]
+Risk_Level: [High or Low]
 Reasoning: [brief explanation of calculation and threshold comparison]
 
 CRITICAL REQUIREMENTS:
+- Always provide either High or Low risk level (never "Not Found")
 - Provide exact percentage calculations where possible
 - Show clear mathematical reasoning
 - Match flag content with appropriate criteria
-- Use "Not Found" only when no numerical comparison is possible
+- Default to Low risk when calculations aren't possible
 </instruction>
 
 <context>
@@ -321,7 +341,7 @@ Provide detailed percentage-based classification:"""
             'previous_value': 'Not Found',
             'current_value': 'Not Found',
             'percentage_change': 'Not Found',
-            'risk_level': 'Not Found',
+            'risk_level': 'Low',  # Default to Low instead of Not Found
             'reasoning': 'No analysis available'
         }
         
@@ -340,15 +360,50 @@ Provide detailed percentage-based classification:"""
             elif 'Reasoning:' in line:
                 result['reasoning'] = line.split(':', 1)[1].strip()
         
+        # KEYWORD FALLBACK: If LLM didn't match criteria, use keyword matching
+        if result['matched_criteria'] == 'None':
+            flag_lower = flag.lower()
+            for criteria_name, keywords in criteria_keywords.items():
+                for keyword in keywords:
+                    if keyword.lower() in flag_lower:
+                        result['matched_criteria'] = criteria_name
+                        # Simple severity check based on keywords
+                        if any(word in flag_lower for word in ['significant', 'major', 'increased', 'declined', 'higher', 'substantial', 'critical']):
+                            result['risk_level'] = 'High'
+                        else:
+                            result['risk_level'] = 'Low'
+                        result['reasoning'] = f'Keyword match: {keyword} found in flag'
+                        break
+                if result['matched_criteria'] != 'None':
+                    break
+        
+        # Ensure risk_level is always High or Low (never Not Found)
+        if result['risk_level'] not in ['High', 'Low']:
+            result['risk_level'] = 'Low'
+        
         return result
         
     except Exception as e:
+        # Even in error case, use keyword fallback
+        flag_lower = flag.lower()
+        for criteria_name, keywords in criteria_keywords.items():
+            for keyword in keywords:
+                if keyword.lower() in flag_lower:
+                    return {
+                        'matched_criteria': criteria_name,
+                        'previous_value': 'Not Found',
+                        'current_value': 'Not Found',
+                        'percentage_change': 'Not Found',
+                        'risk_level': 'Low',  # Default to Low
+                        'reasoning': f'Keyword fallback due to error: {keyword} found'
+                    }
+        
         return {
             'matched_criteria': 'None',
             'previous_value': 'Not Found',
             'current_value': 'Not Found',
             'percentage_change': 'Not Found',
-            'risk_level': 'Not Found',
+            'risk_level': 'Low',  # Always default to Low
             'reasoning': f'Error: {str(e)}'
         }
 
@@ -501,8 +556,7 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
        
         high_count = risk_counts.get('High', 0)
         low_count = risk_counts.get('Low', 0)
-        not_found_count = risk_counts.get('Not Found', 0)
-        total_count = high_count + low_count + not_found_count
+        total_count = high_count + low_count
        
         # Safely set table cells
         if len(table.rows) >= 3 and len(table.columns) >= 2:
@@ -844,7 +898,6 @@ Provide factual category summaries:"""
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
-        not_found_flags = []
         
         if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
             for i, flag in enumerate(unique_flags, 1):
@@ -866,13 +919,11 @@ Provide factual category summaries:"""
                         'reasoning': classification['reasoning']
                     })
                     
-                    # Add to appropriate risk category
+                    # Add to appropriate risk category - only High or Low now
                     if classification['risk_level'].lower() == 'high':
                         high_risk_flags.append(flag)
-                    elif classification['risk_level'].lower() == 'low':
+                    else:  # Everything else defaults to Low
                         low_risk_flags.append(flag)
-                    else:
-                        not_found_flags.append(flag)
                         
                 except Exception as e:
                     logger.error(f"Error classifying flag {i}: {e}")
@@ -882,17 +933,16 @@ Provide factual category summaries:"""
                         'previous_value': 'Not Found',
                         'current_value': 'Not Found',
                         'percentage_change': 'Not Found',
-                        'risk_level': 'Not Found',
+                        'risk_level': 'Low',  # Default to Low even in error
                         'reasoning': f'Classification failed: {str(e)}'
                     })
-                    not_found_flags.append(flag)
+                    low_risk_flags.append(flag)
                   
                 time.sleep(0.3)
         
         risk_counts = {
             'High': len(high_risk_flags),
             'Low': len(low_risk_flags),
-            'Not Found': len(not_found_flags),
             'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag extraction" else 0
         }
         
@@ -900,7 +950,6 @@ Provide factual category summaries:"""
         print(f"\n=== FINAL CLASSIFICATION RESULTS WITH PERCENTAGES ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
-        print(f"Not Found: {risk_counts['Not Found']}")
         print(f"Total Flags: {risk_counts['Total']}")
         
         # Display detailed results with percentages
@@ -955,7 +1004,7 @@ Provide factual category summaries:"""
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Classification with Percentages: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk, {risk_counts['Not Found']} Not Found from {risk_counts['Total']} total unique flags"
+                f"Enhanced Classification with Percentages: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk from {risk_counts['Total']} total unique flags"
             ],
             "timestamp": [timestamp] * 5
         })
