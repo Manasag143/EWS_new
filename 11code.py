@@ -408,10 +408,42 @@ Extract unique flags:"""
         logger.error(f"Error in strict deduplication: {e}")
         return ["Error in flag extraction"]
 
-def classify_flag_using_summary_data(flag: str, criteria_definitions: Dict[str, str], 
-                                   calculated_changes: Dict[str, Dict[str, Any]], 
-                                   fourth_response: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification using calculated changes from summary data"""
+def generate_flag_summaries_for_classification(unique_flags: List[str], fourth_response: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Generate summaries for ALL unique flags (both high and low risk) using 4th iteration data"""
+    
+    flag_summaries = {}
+    
+    for flag in unique_flags:
+        prompt = f"""Create a detailed summary for this red flag using the 4th iteration categorized summary.
+
+RED FLAG: "{flag}"
+
+CATEGORIZED SUMMARY CONTEXT:
+{fourth_response}
+
+REQUIREMENTS:
+1. Extract all relevant financial data and context for this flag
+2. Include specific numbers, percentages, quotes if available
+3. Provide comprehensive background from the summary
+4. Focus on quantitative details that can help in risk assessment
+5. Be factual and detailed - this will be used for classification
+
+OUTPUT: [Detailed summary with all relevant context and data]"""
+        
+        try:
+            response = llm._call(prompt, max_tokens=300, temperature=0.1)
+            flag_summaries[flag] = response.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for flag '{flag}': {e}")
+            flag_summaries[flag] = f"Summary generation failed for: {flag}"
+    
+    return flag_summaries
+
+def classify_flag_with_detailed_summary(flag: str, flag_summary: str, criteria_definitions: Dict[str, str], 
+                                      calculated_changes: Dict[str, Dict[str, Any]], 
+                                      previous_data_dict: Dict[str, Dict[str, str]], llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Enhanced classification using detailed flag summary and calculated changes"""
     
     # Create changes summary for context
     changes_context = "CALCULATED FINANCIAL CHANGES:\n"
@@ -428,33 +460,41 @@ def classify_flag_using_summary_data(flag: str, criteria_definitions: Dict[str, 
             metric_name = metric.replace("Previous reported ", "")
             changes_context += f"{metric_name}: {change_info['previous_value']} → Not Found\n"
     
+    # Format previous year data for reference
+    previous_data_text = "PREVIOUS YEAR BASELINE DATA:\n"
+    for metric, info in previous_data_dict.items():
+        previous_data_text += f"{metric}: {info['value']} ({info['date']})\n"
+    
     criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
     
-    prompt = f"""Classify this red flag using the calculated financial changes and summary context.
+    prompt = f"""Classify this red flag using the detailed flag summary, calculated financial changes, and previous year data.
 
 RED FLAG: "{flag}"
 
+DETAILED FLAG SUMMARY:
+{flag_summary}
+
 {changes_context}
+
+{previous_data_text}
 
 CRITERIA LIST:
 {criteria_list}
 
-SUMMARY CONTEXT:
-{fourth_response[:1500]}
-
 CLASSIFICATION RULES:
-1. Use the calculated changes above to determine High/Low risk
+1. Use the calculated changes to determine High/Low risk based on the 30% and 25% thresholds
 2. If flag relates to a metric that shows HIGH risk in calculations, classify as High
-3. Cross-reference with criteria thresholds
-4. Consider the summary context for additional insights
+3. Cross-reference with criteria thresholds (30% for debt/assets, 25% for revenue/margins)
+4. Use the detailed flag summary to understand the context better
+5. Compare current vs previous year data for accurate assessment
 
 Give answer in this format:
 Matched_Criteria: [criteria name or "None"]
 Risk_Level: [High or Low]
-Reasoning: [one line explanation including specific change if applicable]"""
+Reasoning: [detailed explanation including specific changes and thresholds]"""
     
     try:
-        response = llm._call(prompt, max_tokens=300, temperature=0.0)
+        response = llm._call(prompt, max_tokens=400, temperature=0.0)
         
         result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found'}
         
@@ -499,10 +539,9 @@ def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
    
     return categories_summary
 
-def generate_summary_based_high_risk_summary(high_risk_flags: List[str], fourth_response: str, 
-                                           calculated_changes: Dict[str, Dict[str, Any]], 
-                                           llm: AzureOpenAILLM) -> List[str]:
-    """Generate high risk summaries using 4th iteration summary data"""
+def generate_high_risk_summaries_enhanced(high_risk_flags: List[str], flag_summaries: Dict[str, str], 
+                                        calculated_changes: Dict[str, Dict[str, Any]], llm: AzureOpenAILLM) -> List[str]:
+    """Generate concise high risk summaries using the detailed flag summaries"""
     if not high_risk_flags:
         return []
     
@@ -518,18 +557,20 @@ def generate_summary_based_high_risk_summary(high_risk_flags: List[str], fourth_
     concise_summaries = []
     
     for flag in high_risk_flags:
-        prompt = f"""Create a concise 1-2 line summary for this high risk flag using the categorized summary and financial changes.
+        flag_summary = flag_summaries.get(flag, f"No detailed summary available for: {flag}")
+        
+        prompt = f"""Create a concise 1-2 line summary for this high risk flag using the detailed flag summary and financial changes.
 
 HIGH RISK FLAG: "{flag}"
 
-{financial_context}
+DETAILED FLAG SUMMARY:
+{flag_summary}
 
-CATEGORIZED SUMMARY CONTEXT:
-{fourth_response[:2000]}
+{financial_context}
 
 REQUIREMENTS:
 1. Maximum 2 sentences
-2. Include specific numbers/percentages from the summary if relevant
+2. Include specific numbers/percentages from the flag summary if relevant
 3. Reference calculated financial changes if applicable
 4. Be factual and direct
 5. No prefixes or labels
@@ -614,7 +655,7 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
        
         # High Risk Flags section with summary-based summaries
         if high_risk_summaries and len(high_risk_summaries) > 0:
-            high_risk_heading = doc.add_heading('High Risk Summary (Based on 4th Iteration):', level=2)
+            high_risk_heading = doc.add_heading('High Risk Summary (Based on Enhanced Analysis):', level=2)
             if len(high_risk_heading.runs) > 0:
                 high_risk_heading.runs[0].bold = True
            
@@ -654,7 +695,7 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
             doc.add_paragraph('No categorized summary available.')
        
         # Save document
-        doc_filename = f"{pdf_name}_Enhanced_Report_v2.docx"
+        doc_filename = f"{pdf_name}_Enhanced_Report_Final.docx"
         doc_path = os.path.join(output_folder, doc_filename)
         doc.save(doc_path)
        
@@ -664,12 +705,12 @@ def create_enhanced_word_document(pdf_name: str, company_info: str, risk_counts:
         logger.error(f"Error creating enhanced Word document: {e}")
         return None
 
-def process_pdf_enhanced_pipeline_v2(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
-                                    output_folder: str = "results", 
-                                    api_key: str = None, azure_endpoint: str = None, 
-                                    api_version: str = None, deployment_name: str = "gpt-4.1"):
+def process_pdf_enhanced_pipeline_final(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+                                       output_folder: str = "results", 
+                                       api_key: str = None, azure_endpoint: str = None, 
+                                       api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Enhanced pipeline using 4th iteration summary for financial comparison and classification
+    Final Enhanced Pipeline with proper iteration flow
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -867,12 +908,12 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt, max_tokens=4000)
         
-        # NEW: Extract financial metrics from 4th iteration summary
-        print("Extracting financial metrics from summary...")
+        # Extract financial metrics from 4th iteration summary
+        print("Extracting financial metrics from 4th iteration summary...")
         summary_metrics = extract_financial_metrics_from_summary(fourth_response, llm)
         
-        # NEW: Calculate changes using summary data
-        print("Calculating changes using summary data...")
+        # Calculate changes using summary data
+        print("Calculating financial changes using summary data...")
         calculated_changes = calculate_changes_from_summary(previous_data_dict, summary_metrics)
         
         # Display enhanced calculations
@@ -888,17 +929,17 @@ Provide factual category summaries:"""
                 print(f"{metric_name}: {change_info['previous_value']} → {change_info['current_value']}")
         print("="*70 + "\n")
         
-        # ITERATION 5: Extract unique flags from 2nd iteration and generate summaries for ALL flags
-        print("Running 5th iteration - Enhanced Unique Flags Classification...")
+        # ITERATION 5: Extract unique flags and enhanced classification
+        print("Running 5th iteration - Extract Unique Flags...")
         
         try:
             unique_flags = extract_unique_flags_with_strict_deduplication(second_response, llm)
-            print(f"\nUnique flags extracted: {len(unique_flags)}")
+            print(f"Unique flags extracted: {len(unique_flags)}")
         except Exception as e:
             logger.error(f"Error extracting flags: {e}")
             unique_flags = ["Error in flag extraction"]
         
-        # NEW: Generate detailed summaries for ALL unique flags using 4th iteration data
+        # Generate detailed summaries for ALL unique flags using 4th iteration data
         print("Generating detailed summaries for all flags using 4th iteration data...")
         flag_summaries = generate_flag_summaries_for_classification(unique_flags, fourth_response, llm)
         
@@ -922,13 +963,13 @@ Provide factual category summaries:"""
             "others": "High: Other issues not explicitly covered above that could impact the business; compare with company's current quarter EBITDA to decide significance; Low: No other issues or concerns"
         }
         
-        # NEW: Enhanced classification using detailed flag summaries and calculated changes
+        # Enhanced classification using detailed flag summaries and calculated changes
+        print("Classifying flags using detailed summaries and calculated changes...")
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
         
         if len(unique_flags) > 0 and unique_flags[0] != "Error in flag extraction":
-            print("Classifying flags using detailed summaries and calculated changes...")
             for i, flag in enumerate(unique_flags, 1):
                 try:
                     flag_summary = flag_summaries.get(flag, f"No summary available for: {flag}")
@@ -997,171 +1038,6 @@ Provide factual category summaries:"""
         else:
             print(f"\n--- LOW RISK FLAGS ---")
             print("  No low risk flags identified")
-
-def generate_flag_summaries_for_classification(unique_flags: List[str], fourth_response: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Generate summaries for ALL unique flags (both high and low risk) using 4th iteration data"""
-    
-    flag_summaries = {}
-    
-    for flag in unique_flags:
-        prompt = f"""Create a detailed summary for this red flag using the 4th iteration categorized summary.
-
-RED FLAG: "{flag}"
-
-CATEGORIZED SUMMARY CONTEXT:
-{fourth_response}
-
-REQUIREMENTS:
-1. Extract all relevant financial data and context for this flag
-2. Include specific numbers, percentages, quotes if available
-3. Provide comprehensive background from the summary
-4. Focus on quantitative details that can help in risk assessment
-5. Be factual and detailed - this will be used for classification
-
-OUTPUT: [Detailed summary with all relevant context and data]"""
-        
-        try:
-            response = llm._call(prompt, max_tokens=300, temperature=0.1)
-            flag_summaries[flag] = response.strip()
-            
-        except Exception as e:
-            logger.error(f"Error generating summary for flag '{flag}': {e}")
-            flag_summaries[flag] = f"Summary generation failed for: {flag}"
-    
-    return flag_summaries
-
-def classify_flag_with_detailed_summary(flag: str, flag_summary: str, criteria_definitions: Dict[str, str], 
-                                      calculated_changes: Dict[str, Dict[str, Any]], 
-                                      previous_data_dict: Dict[str, Dict[str, str]], llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Enhanced classification using detailed flag summary and calculated changes"""
-    
-    # Create changes summary for context
-    changes_context = "CALCULATED FINANCIAL CHANGES:\n"
-    for metric, change_info in calculated_changes.items():
-        if change_info['metric_found']:
-            metric_name = metric.replace("Previous reported ", "")
-            changes_context += f"{metric_name}: {change_info['previous_value']} → {change_info['current_value']} "
-            if change_info['change_percent'] is not None:
-                direction = "↑" if change_info['change_percent'] > 0 else "↓"
-                changes_context += f"({direction}{abs(change_info['change_percent']):.1f}%) [{change_info['risk_level']}]\n"
-            else:
-                changes_context += "[Unable to calculate]\n"
-        else:
-            metric_name = metric.replace("Previous reported ", "")
-            changes_context += f"{metric_name}: {change_info['previous_value']} → Not Found\n"
-    
-    # Format previous year data for reference
-    previous_data_text = "PREVIOUS YEAR BASELINE DATA:\n"
-    for metric, info in previous_data_dict.items():
-        previous_data_text += f"{metric}: {info['value']} ({info['date']})\n"
-    
-    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
-    
-    prompt = f"""Classify this red flag using the detailed flag summary, calculated financial changes, and previous year data.
-
-RED FLAG: "{flag}"
-
-DETAILED FLAG SUMMARY:
-{flag_summary}
-
-{changes_context}
-
-{previous_data_text}
-
-CRITERIA LIST:
-{criteria_list}
-
-CLASSIFICATION RULES:
-1. Use the calculated changes to determine High/Low risk based on the 30% and 25% thresholds
-2. If flag relates to a metric that shows HIGH risk in calculations, classify as High
-3. Cross-reference with criteria thresholds (30% for debt/assets, 25% for revenue/margins)
-4. Use the detailed flag summary to understand the context better
-5. Compare current vs previous year data for accurate assessment
-
-Give answer in this format:
-Matched_Criteria: [criteria name or "None"]
-Risk_Level: [High or Low]
-Reasoning: [detailed explanation including specific changes and thresholds]"""
-    
-    try:
-        response = llm._call(prompt, max_tokens=400, temperature=0.0)
-        
-        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found'}
-        
-        lines = response.strip().split('\n')
-        for line in lines:
-            if 'Matched_Criteria:' in line:
-                result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Risk_Level:' in line:
-                result['risk_level'] = line.split(':', 1)[1].strip()
-            elif 'Reasoning:' in line:
-                result['reasoning'] = line.split(':', 1)[1].strip()
-        
-        return result
-        
-    except Exception as e:
-        return {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': f'Error: {str(e)}'}
-
-def generate_high_risk_summaries_enhanced(high_risk_flags: List[str], flag_summaries: Dict[str, str], 
-                                        calculated_changes: Dict[str, Dict[str, Any]], llm: AzureOpenAILLM) -> List[str]:
-    """Generate concise high risk summaries using the detailed flag summaries"""
-    if not high_risk_flags:
-        return []
-    
-    # Create financial context from calculated changes
-    financial_context = "KEY FINANCIAL CHANGES:\n"
-    for metric, change_info in calculated_changes.items():
-        if change_info['risk_level'] == 'HIGH':
-            metric_name = metric.replace("Previous reported ", "")
-            if change_info['change_percent'] is not None:
-                direction = "increased" if change_info['change_percent'] > 0 else "decreased"
-                financial_context += f"- {metric_name} {direction} by {abs(change_info['change_percent']):.1f}%\n"
-    
-    concise_summaries = []
-    
-    for flag in high_risk_flags:
-        flag_summary = flag_summaries.get(flag, f"No detailed summary available for: {flag}")
-        
-        prompt = f"""Create a concise 1-2 line summary for this high risk flag using the detailed flag summary and financial changes.
-
-HIGH RISK FLAG: "{flag}"
-
-DETAILED FLAG SUMMARY:
-{flag_summary}
-
-{financial_context}
-
-REQUIREMENTS:
-1. Maximum 2 sentences
-2. Include specific numbers/percentages from the flag summary if relevant
-3. Reference calculated financial changes if applicable
-4. Be factual and direct
-5. No prefixes or labels
-
-OUTPUT: [Direct summary only]"""
-        
-        try:
-            response = llm._call(prompt, max_tokens=150, temperature=0.1)
-            
-            clean_response = response.strip()
-            
-            # Remove common prefixes
-            prefixes_to_remove = ["Summary:", "The flag:", "Based on", "According to"]
-            for prefix in prefixes_to_remove:
-                if clean_response.startswith(prefix):
-                    clean_response = clean_response[len(prefix):].strip()
-            
-            # Ensure proper ending
-            if not clean_response.endswith('.'):
-                clean_response += '.'
-            
-            concise_summaries.append(clean_response)
-            
-        except Exception as e:
-            logger.error(f"Error generating summary for flag '{flag}': {e}")
-            concise_summaries.append(f"{flag}. Requires review based on analysis.")
-    
-    return concise_summaries
         
         # Create Word document using enhanced summary generation
         print("\nCreating Word document...")
@@ -1169,7 +1045,7 @@ OUTPUT: [Direct summary only]"""
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # NEW: Use enhanced high risk summary generation with detailed flag summaries
+            # Use enhanced high risk summary generation with detailed flag summaries
             if high_risk_flags:
                 concise_summaries = generate_high_risk_summaries_enhanced(
                     high_risk_flags, flag_summaries, calculated_changes, llm
@@ -1177,7 +1053,7 @@ OUTPUT: [Direct summary only]"""
             else:
                 concise_summaries = []
             
-            # Create Word document (modified to use new summaries)
+            # Create Word document
             word_doc_path = create_enhanced_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -1214,7 +1090,7 @@ OUTPUT: [Direct summary only]"""
                 "Deduplication", 
                 "Categorization",
                 "Summary Generation (Enhanced)",
-                "Enhanced Classification (Summary-Based)"
+                "Enhanced Classification with Flag Summaries"
             ],
             "response": [
                 changes_text,
@@ -1227,13 +1103,13 @@ OUTPUT: [Direct summary only]"""
             "timestamp": [timestamp] * 6
         })
        
-        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_v2_results.csv")
+        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_pipeline_final_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results
+        # Save detailed classification results with flag summaries
         if len(classification_results) > 0:
             classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification_v2.csv")
+            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_flag_classification_final.csv")
             classification_df.to_csv(classification_file, index=False)
 
         print(f"\n=== PROCESSING COMPLETE FOR {pdf_name} ===")
@@ -1249,7 +1125,7 @@ def main():
     # Configuration
     pdf_folder_path = r"kalyan_pdf" 
     queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"kalyan_results_try2.2.0"
+    output_folder = r"kalyan_results_final"
 
     api_key = "8496498c"
     azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
@@ -1283,7 +1159,7 @@ Previous reported current liabilities	Mar-24	3317Cr"""
         
         start_time = time.time()
         
-        result = process_pdf_enhanced_pipeline_v2(
+        result = process_pdf_enhanced_pipeline_final(
             pdf_path=pdf_file,
             queries_csv_path=queries_csv_path,
             previous_year_data=previous_year_data,
