@@ -1,0 +1,17 @@
+previous_year_data = """
+Previous reported Debt	Mar-24	4486Cr
+Current quarter EBITDA	Sept-24	412Cr
+Previous reported asset value	Mar-24	12818Cr
+Previous reported receivable days	Mar-24	6days
+Previous reported payable days	Mar-24	45days
+Previous reported revenue	June-24	5535Cr
+Previous reported profit before tax	June-24	237Cr
+Previous reported profit after tax	June-24	180Cr  # Add if available
+Previous reported gross margin	June-24	15%  # Add if available
+Previous reported operating margin	June-24	7%
+Previous reported cash balance	Mar-24	975Cr
+Previous reported current liabilities	Mar-24	3317Cr
+Previous reported short-term debt	Mar-24	1200Cr  # Add if available
+Previous quarter revenue	Mar-24	5200Cr  # For QoQ comparison
+Previous quarter EBITDA	June-24	380Cr  # For QoQ comparison
+"""
