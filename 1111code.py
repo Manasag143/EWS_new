@@ -21,12 +21,24 @@ import httpx
 warnings.filterwarnings('ignore')
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
- 
+
+# ==============================================================================
+# CORE IMPORTS AND CLASSES
+# ==============================================================================
+
+# ==============================================================================
+# UTILITY FUNCTIONS
+# ==============================================================================
+
 def getFilehash(file_path: str):
     """Generate SHA3-256 hash of a file"""
     with open(file_path, 'rb') as f:
         return hashlib.sha3_256(f.read()).hexdigest()
- 
+
+# ==============================================================================
+# AZURE OPENAI LLM CLASS
+# ==============================================================================
+
 class AzureOpenAILLM:
     """Azure OpenAI gpt-4.1 LLM class"""
    
@@ -63,7 +75,11 @@ class AzureOpenAILLM:
         except Exception as e:
             logger.error(f"Azure OpenAI API call failed: {str(e)}")
             return f"Azure OpenAI Call Failed: {str(e)}"
- 
+
+# ==============================================================================
+# PDF PROCESSING FUNCTIONS
+# ==============================================================================
+
 class PDFExtractor:
     """Class for extracting text from PDF files"""
    
@@ -149,83 +165,237 @@ Extract company information:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
-def classify_flag_against_criteria_simple(flag: str, criteria_definitions: Dict[str, str], 
-                                         previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
-    """Simplified classification with clear, concise prompt"""
+# ==============================================================================
+# BUCKET-BASED CLASSIFICATION SYSTEM
+# ==============================================================================
+
+def create_criteria_buckets():
+    """Organize 23 criteria into 6 buckets for better LLM classification"""
     
-    # Simple keyword mapping - just the most important ones
-    criteria_keywords = {
-        "debt_increase": ["debt increase", "debt increased", "higher debt", "borrowing increase"],
-        "provisioning": ["provision", "write-off", "bad debt", "impairment"],
-        "asset_decline": ["asset decline", "asset fall", "asset decrease"],
-        "receivable_days": ["receivable days", "collection period", "DSO"],
-        "payable_days": ["payable days", "payment period", "DPO"],
-        "debt_ebitda": ["debt to ebitda", "leverage ratio", "debt multiple"],
-        "revenue_decline": ["revenue decline", "sales decline", "revenue fall"],
-        "onetime_expenses": ["one-time", "exceptional", "non-recurring"],
-        "margin_decline": ["margin decline", "margin pressure", "profitability decline"],
-        "cash_balance": ["cash decline", "liquidity issue", "cash shortage"],
-        "short_term_debt": ["short-term debt", "current liabilities"],
-        "management_issues": ["management change", "CEO", "CFO", "resignation", "manpower"],
-        "regulatory_compliance": ["regulatory", "compliance", "penalty", "violation"],
-        "market_competition": ["competition", "market share", "competitor"],
-        "operational_disruptions": ["operational", "supply chain", "production issues"]
+    # Bucket 1: Core Debt & Leverage (4 criteria)
+    bucket_1 = {
+        "debt_increase": "High: Debt is increased more than 30% compared to previous reported balance sheet number; Low: Debt increased less than 30% compared to previous reported balance sheet number",
+        "debt_ebitda": "High: Debt/EBITDA > 3x i.e. Debt to EBITDA ratio is above (greater than) three times; Low: Debt/EBITDA < 3x i.e. Debt to EBITDA ratio is less than three times",
+        "short_term_borrowings": "High: Short-term borrowings or current liabilities increase by more than 30% compared to previous reported balance sheet number; Low: Short-term borrowings or current liabilities increase is less than 30% compared to previous reported balance sheet number",
+        "cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number"
     }
     
-    criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_definitions.items()])
+    # Bucket 2: Profitability & Performance (4 criteria)
+    bucket_2 = {
+        "revenue_decline": "High: revenue falls by more than 25% compared to previous reported quarter number; Low: revenue falls by less than 25% compared to previous reported quarter number",
+        "profit_before_tax_decline": "High: profitability or profit before tax (PBT) falls by more than 25% compared to previous reported quarter number; Low: profitability or profit before tax (PBT) falls by less than 25% compared to previous reported quarter number",
+        "profit_after_tax_decline": "High: Profit after tax (PAT) falls by more than 25% compared to previous reported quarter number; Low: Profit after tax (PAT) falls by less than 25% compared to previous reported quarter number",
+        "EBIDTA_decline": "High: EBITDA falls by more than 25% compared to previous reported quarter number; Low: EBITDA falls by less than 25% compared to previous reported quarter number"
+    }
     
-    # Much simpler prompt
-    prompt = f"""Look at this red flag and match it to ONE criteria from the list below.
+    # Bucket 3: Margins & Operational Efficiency (4 criteria)
+    bucket_3 = {
+        "margin_decline": "High: operating margin falling more than 25% compared to previous reported quarter number; Low: Operating margin falling less than 25% compared to previous reported quarter number",
+        "gross_margin": "High: gross margin falling more than 100bps (basis points) ; Low: gross margin falling less than 100bps (basis points)",
+        "one-time_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBITDA; Low: one-time expenses or losses less than 25% of current quarter's EBITDA",
+        "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBITDA; Low: provisioning or write-offs less than 25% of current quarter's EBITDA"
+    }
+    
+    # Bucket 4: Working Capital & Asset Management (4 criteria)
+    bucket_4 = {
+        "receivable_days": "High: receivable days OR debtor days are increased more than 30% compared to previous reported balance sheet number; Low: receivable days or debtor's days are increased but less than 30% compared to previous reported balance sheet number",
+        "payable_days": "High: payable days or creditors days increase by more than 30% compared to previous reported balance sheet number; Low: payable days or creditors days increase is less than 30% compared to previous reported balance sheet number",
+        "receivables": "High: receivables or debtors are increased more than 30% compared to previous reported balance sheet number; Low: receivables or debtors are increase is less than 30% compared to previous reported balance sheet number",
+        "payables": "High: payables or creditors increase by greater than 30% compared to previous reported balance sheet number; Low: payables or creditors is less than 30% compared to previous reported balance sheet number"
+    }
+    
+    # Bucket 5: Asset Quality & Governance (4 criteria) - ENHANCED FOR QUALITATIVE
+    bucket_5 = {
+        "asset_decline": "High: Asset value falls by more than 30% compared to the previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
+        "impairment": "High: Impairment or devaluation more than 25% of previous reported net worth from balance sheet; Low: Impairment or devaluation less than 25% of previous reported net worth from balance sheet",
+        "management_issues": "High: ONLY if CEO/CFO resignation, fraud/misconduct investigations, major governance failures, significant strategy failures, or loss of institutional confidence; Low: Routine management changes, normal strategy discussions, minor organizational adjustments",
+        "regulatory_compliance": "High: ONLY if regulatory penalties, violations, warnings from regulators, license threats, or material compliance failures; Low: Routine compliance discussions, minor filing delays, normal regulatory interactions"
+    }
+    
+    # Bucket 6: Market & Operational Risks (3 criteria) - ENHANCED FOR QUALITATIVE
+    bucket_6 = {
+        "market_competition": "High: ONLY if significant market share loss mentioned with numbers, major competitor entry causing material impact, or pricing wars affecting margins significantly; Low: General competitive pressure, normal market dynamics, routine competitive discussions",
+        "operational_disruptions": "High: ONLY if major facility shutdowns, critical supply chain breaks with material impact, widespread strikes, or significant operational failures mentioned; Low: Minor operational adjustments, routine efficiency discussions, normal operational challenges",
+        "others": "High: Other material issues with quantified impact > 25% of current quarter EBITDA or clear material business impact; Low: Other minor issues or concerns without material impact"
+    }
+    
+    return [bucket_1, bucket_2, bucket_3, bucket_4, bucket_5, bucket_6]
 
-RED FLAG: "{flag}"
+def create_previous_data_buckets(previous_year_data: str):
+    """Organize previous year data into 6 buckets matching the criteria buckets"""
+    
+    # Parse the previous year data to extract relevant metrics for each bucket
+    lines = previous_year_data.strip().split('\n')
+    data_dict = {}
+    
+    for line in lines:
+        if line.strip():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                metric = parts[0].strip()
+                value = '\t'.join(parts[1:]).strip()
+                data_dict[metric.lower()] = f"{metric}\t{value}"
+    
+    # Bucket 1: Core Debt & Leverage
+    bucket_1_data = ""
+    for key in ['debt as per previous reported balance sheet number', 'current quarter ebitda', 'cash balance as per previous reported balance sheet number', 'short term borrowings as per the previous reported balance sheet number', 'ebitda as per previous reported quarter number']:
+        if key in data_dict:
+            bucket_1_data += data_dict[key] + "\n"
+    
+    # Bucket 2: Profitability & Performance  
+    bucket_2_data = ""
+    for key in ['revenue as per previous reported quarter number', 'profit before tax as per previous reported quarter number', 'profit after tax as per previous reported quarter number', 'ebitda as per previous reported quarter number', 'current quarter ebitda']:
+        if key in data_dict:
+            bucket_2_data += data_dict[key] + "\n"
+    
+    # Bucket 3: Margins & Operational Efficiency
+    bucket_3_data = ""
+    for key in ['operating margin as per previous quarter number', 'current quarter ebitda', 'ebitda as per previous reported quarter number', 'revenue as per previous reported quarter number']:
+        if key in data_dict:
+            bucket_3_data += data_dict[key] + "\n"
+    
+    # Bucket 4: Working Capital & Asset Management
+    bucket_4_data = ""
+    for key in ['receivable days as per previous reported balance sheet number', 'payable days as per previous reported balance sheet number', 'receivables as per previous reported balance sheet number', 'payables as per previous reported balance sheet number']:
+        if key in data_dict:
+            bucket_4_data += data_dict[key] + "\n"
+    
+    # Bucket 5: Asset Quality & Governance
+    bucket_5_data = ""
+    for key in ['asset value as per previous reported balance sheet number', 'previous reported net worth from balance sheet', 'current quarter ebitda']:
+        if key in data_dict:
+            bucket_5_data += data_dict[key] + "\n"
+    
+    # Bucket 6: Market & Operational Risks
+    bucket_6_data = ""
+    for key in ['current quarter ebitda', 'revenue as per previous reported quarter number', 'ebitda as per previous reported quarter number']:
+        if key in data_dict:
+            bucket_6_data += data_dict[key] + "\n"
+    
+    return [bucket_1_data, bucket_2_data, bucket_3_data, bucket_4_data, bucket_5_data, bucket_6_data]
 
-CRITERIA LIST:
+def classify_flag_with_focused_buckets(flag: str, previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """Classify flag using 6 separate LLM calls with bucket-specific data and enhanced qualitative assessment"""
+    
+    criteria_buckets = create_criteria_buckets()
+    data_buckets = create_previous_data_buckets(previous_year_data)
+    
+    bucket_names = [
+        "Core Debt & Leverage",
+        "Profitability & Performance", 
+        "Margins & Operational Efficiency",
+        "Working Capital & Asset Management",
+        "Asset Quality & Governance",
+        "Market & Operational Risks"
+    ]
+    
+    best_match = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found', 'confidence': 0}
+    
+    for i, (criteria_bucket, data_bucket, bucket_name) in enumerate(zip(criteria_buckets, data_buckets, bucket_names)):
+        criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_bucket.items()])
+        
+        # Enhanced prompt for qualitative buckets (5 and 6)
+        if i >= 4:  # Buckets 5 and 6 contain qualitative criteria
+            prompt = f"""Analyze this red flag against the {bucket_name} criteria with ENHANCED QUALITATIVE ASSESSMENT.
+
+RED FLAG TO ANALYZE: "{flag}"
+
+RELEVANT CRITERIA FOR THIS BUCKET:
 {criteria_list}
 
-RULES:
-1. Find which criteria this flag belongs to based on keywords
-2. Check if it meets the High/Low threshold using previous year data
-3. If no clear match, say "None"
+RELEVANT PREVIOUS YEAR DATA FOR COMPARISON:
+{data_bucket}
 
-PREVIOUS YEAR DATA:
-{previous_year_data}
+SPECIAL INSTRUCTIONS FOR QUALITATIVE ASSESSMENT:
+- For management_issues: Look for SPECIFIC evidence of senior leadership changes, investigations, or governance failures
+- For regulatory_compliance: Look for SPECIFIC penalties, violations, or regulatory warnings mentioned
+- For market_competition: Look for QUANTIFIED market share losses or material competitive impacts
+- For operational_disruptions: Look for SPECIFIC facility issues, supply chain breaks, or operational failures
 
-Give answer in this format:
-Matched_Criteria: [criteria name or "None"]
+ANALYSIS TASK:
+1. Check if this red flag matches ANY of the above criteria
+2. For QUANTITATIVE criteria: Use the provided data to calculate percentage changes
+3. For QUALITATIVE criteria: Apply STRICT HIGH RISK thresholds - only mark High if clear material impact/serious concern/urgent action needed
+4. Rate your confidence (1-10) in this classification
+
+RESPONSE FORMAT:
+Matched_Criteria: [exact criteria name or "None"]
 Risk_Level: [High or Low]
-Reasoning: [one line explanation]"""
+Confidence: [1-10]
+Calculation: [show any percentage calculations if applicable, or "N/A" for qualitative]
+Reasoning: [brief explanation with specific evidence from the flag]
+
+IMPORTANT: Be CONSERVATIVE with qualitative High Risk classifications. Only mark High if there's clear evidence of material business impact."""
+        else:
+            prompt = f"""Analyze this red flag against the {bucket_name} criteria ONLY.
+
+RED FLAG TO ANALYZE: "{flag}"
+
+RELEVANT CRITERIA FOR THIS BUCKET:
+{criteria_list}
+
+RELEVANT PREVIOUS YEAR DATA FOR COMPARISON:
+{data_bucket}
+
+ANALYSIS TASK:
+1. Check if this red flag matches ANY of the above criteria
+2. Use the provided previous year data to determine High/Low risk level based on thresholds
+3. Calculate percentage changes where applicable
+4. Rate your confidence (1-10) in this classification
+
+RESPONSE FORMAT:
+Matched_Criteria: [exact criteria name or "None"]
+Risk_Level: [High or Low]
+Confidence: [1-10]
+Calculation: [show any percentage calculations if applicable]
+Reasoning: [brief explanation with specific numbers]
+
+IMPORTANT: Only consider the criteria listed above for this bucket. Ignore other financial aspects."""
+
+        try:
+            response = llm._call(prompt, max_tokens=300, temperature=0.0)
+            
+            # Parse response
+            result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match', 'confidence': 0}
+            
+            lines = response.strip().split('\n')
+            for line in lines:
+                if 'Matched_Criteria:' in line:
+                    result['matched_criteria'] = line.split(':', 1)[1].strip().strip('"')
+                elif 'Risk_Level:' in line:
+                    result['risk_level'] = line.split(':', 1)[1].strip()
+                elif 'Confidence:' in line:
+                    try:
+                        confidence_text = line.split(':', 1)[1].strip()
+                        result['confidence'] = int(''.join(filter(str.isdigit, confidence_text)))
+                    except:
+                        result['confidence'] = 5
+                elif 'Reasoning:' in line:
+                    result['reasoning'] = line.split(':', 1)[1].strip()
+                elif 'Calculation:' in line:
+                    calculation = line.split(':', 1)[1].strip()
+                    if calculation and calculation != "N/A":
+                        result['reasoning'] = f"{calculation}. {result['reasoning']}"
+            
+            # Keep the highest confidence match
+            if result['matched_criteria'] != 'None' and result['confidence'] > best_match['confidence']:
+                best_match = result
+                best_match['bucket'] = bucket_name
+                
+        except Exception as e:
+            logger.error(f"Error in {bucket_name}: {e}")
+            continue
     
-    try:
-        response = llm._call(prompt, max_tokens=200, temperature=0.0)
-        
-        # Simple parsing
-        result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found'}
-        
-        lines = response.strip().split('\n')
-        for line in lines:
-            if 'Matched_Criteria:' in line:
-                result['matched_criteria'] = line.split(':', 1)[1].strip()
-            elif 'Risk_Level:' in line:
-                result['risk_level'] = line.split(':', 1)[1].strip()
-            elif 'Reasoning:' in line:
-                result['reasoning'] = line.split(':', 1)[1].strip()
-        
-        # Simple fallback check
-        flag_lower = flag.lower()
-        for criteria_name, keywords in criteria_keywords.items():
-            for keyword in keywords:
-                if keyword.lower() in flag_lower:
-                    if result['matched_criteria'] == 'None':
-                        result['matched_criteria'] = criteria_name
-                        # Simple severity check
-                        if any(word in flag_lower for word in ['significant', 'major', 'increased', 'declined', 'higher']):
-                            result['risk_level'] = 'High'
-                        break
-        
-        return result
-        
-    except Exception as e:
-        return {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': f'Error: {str(e)}'}
+    return {
+        'matched_criteria': best_match['matched_criteria'],
+        'risk_level': best_match['risk_level'], 
+        'reasoning': best_match['reasoning'],
+        'bucket': best_match.get('bucket', 'None')
+    }
+
+# ==============================================================================
+# DOCUMENT GENERATION FUNCTIONS
+# ==============================================================================
 
 def parse_summary_by_categories(fourth_response: str) -> Dict[str, List[str]]:
     """Parse the 4th iteration summary response by categories"""
@@ -259,9 +429,9 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
     if not high_risk_flags:
         return []
     
-    # First, deduplicate the high_risk_flags themselves
+    # Deduplicate the high_risk_flags
     unique_high_risk_flags = []
-    seen_flag_keywords = []  # Changed from set to list
+    seen_flag_keywords = []
     
     for flag in high_risk_flags:
         normalized_flag = re.sub(r'[^\w\s]', '', flag.lower()).strip()
@@ -277,10 +447,10 @@ def generate_strict_high_risk_summary(high_risk_flags: List[str], context: str, 
         
         if not is_duplicate_flag:
             unique_high_risk_flags.append(flag)
-            seen_flag_keywords.append(flag_words)  # Append the set to the list
+            seen_flag_keywords.append(flag_words)
     
     concise_summaries = []
-    seen_summary_keywords = []  # Changed from set to list
+    seen_summary_keywords = []
     
     for flag in unique_high_risk_flags:
         prompt = f"""
@@ -345,11 +515,11 @@ OUTPUT FORMAT: [Direct factual summary only, no labels or prefixes]
             
             if not is_duplicate_summary:
                 concise_summaries.append(concise_summary)
-                seen_summary_keywords.append(summary_words)  # Append the set to the list
+                seen_summary_keywords.append(summary_words)
             
         except Exception as e:
             logger.error(f"Error generating summary for flag '{flag}': {e}")
-            if len(concise_summaries) < len(unique_high_risk_flags):  # Only add fallback if we haven't added this one yet
+            if len(concise_summaries) < len(unique_high_risk_flags):
                 concise_summaries.append(f"{flag}. Review required based on analysis.")
     
     return concise_summaries
@@ -403,7 +573,7 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             # Generate concise summaries for high risk flags
             concise_summaries = generate_strict_high_risk_summary(high_risk_flags, context, llm)
             
-            # Final deduplication check at Word document level - more aggressive
+            # Final deduplication check at Word document level
             final_unique_summaries = []
             seen_content = set()
             
@@ -492,12 +662,16 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             logger.error(f"Error creating fallback document: {e2}")
             return None
 
+# ==============================================================================
+# MAIN PROCESSING PIPELINE
+# ==============================================================================
+
 def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Process PDF through enhanced 5-iteration pipeline with improved deduplication and direct classification
+    Process PDF through enhanced 5-iteration pipeline with bucket-based classification
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -506,9 +680,9 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
     try:
         # Initialize LLM and load PDF
         llm = AzureOpenAILLM(
-            api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
-            azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"), 
-            api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            api_key=api_key,
+            azure_endpoint=azure_endpoint, 
+            api_version=api_version,
             deployment_name=deployment_name
         )
         
@@ -530,7 +704,7 @@ def process_pdf_enhanced_pipeline(pdf_path: str, queries_csv_path: str, previous
             logger.warning(f"Error loading queries file: {e}. Using default query.")
             first_query = "Analyze this document for potential red flags."
         
-        # ITERATION 1: Initial red flag identification with structured prompt
+        # ITERATION 1: Initial red flag identification
         print("Running 1st iteration - Initial Analysis...")
         first_prompt = f"""<role>
 You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
@@ -570,46 +744,57 @@ Provide comprehensive red flag analysis:"""
         
         first_response = llm._call(first_prompt)
         
-        # ITERATION 2: Enhanced Deduplication with Context Preservation
+        # ITERATION 2: Enhanced Deduplication
         print("Running 2nd iteration - Enhanced Deduplication...")
         second_prompt = f"""<role>
-You are an expert financial analyst specializing in precise deduplication while maintaining comprehensive document analysis integrity.
+You are an expert financial analyst specializing in identifying and eliminating duplicate red flags while maintaining comprehensive analysis integrity.
 </role>
 
 <system_prompt>
-You excel at identifying and removing duplicate red flags while preserving all original context, quotes, page references, and detailed analysis structure from the initial assessment.
+You excel at recognizing when multiple red flags describe the same underlying financial issue, even when worded differently, and consolidating them into single, comprehensive red flags while preserving all supporting evidence.
 </system_prompt>
 
 <instruction>
-Remove ONLY duplicate red flags from the analysis while preserving ALL other content exactly as provided.
+Analyze the red flags and remove duplicates that describe the same underlying financial concern. Consolidate similar issues into single, comprehensive red flags.
 
-DEDUPLICATION CRITERIA:
-1. Remove red flags that describe the SAME underlying financial concern
-2. Keep the most comprehensive version when duplicates are found
-3. Merge similar flags only if they address identical issues with different wording
-4. Preserve ALL original quotes, speaker attributions, and page references
-5. Maintain the exact numbering sequence and formatting structure
-6. Keep ALL unique red flags even if they seem minor
-7. Do NOT lose any substantive analysis or context
+DEDUPLICATION RULES:
+1. MERGE red flags that refer to the same financial metric, issue, or concern
+2. COMBINE red flags about the same business area/division/segment  
+3. CONSOLIDATE similar operational or strategic concerns
+4. ELIMINATE redundant mentions of the same data point or statistic
+5. KEEP the most comprehensive version with the best supporting evidence
+6. PRESERVE all original quotes, speaker attributions, and page references from merged items
+7. MAINTAIN sequential numbering (1, 2, 3, etc.) after deduplication
+8. DO NOT lose any substantive financial concerns - only remove true duplicates
 
-WHAT TO PRESERVE COMPLETELY:
-- All original quotes with speaker names and page references
-- Sequential numbering format (1, 2, 3, etc.)
-- Detailed descriptions and evidence
-- All unique financial concerns regardless of severity
-- Complete context and supporting information
+EXAMPLES OF WHAT TO MERGE:
+- "Revenue declined 15%" + "Sales performance showing decline" + "Top-line growth challenges" → Single revenue decline flag
+- "Debt levels increased" + "Higher borrowing noted" + "Leverage concerns mentioned" → Single debt increase flag  
+- "Cash flow pressures" + "Working capital constraints" + "Liquidity challenges" → Single liquidity concern flag
+- Multiple flags about the same business segment → Single segment-specific flag
+- Same quote mentioned in multiple flags → Keep quote in most relevant flag only
 
-DEDUPLICATION EXAMPLES:
-- "Revenue declined 15%" + "Sales performance showing decline" = Keep more specific one with numbers
-- "Debt increased significantly" + "Higher borrowing noted" = Merge into comprehensive statement
-- "Cash flow concerns" + "Working capital issues" = Keep both (different issues)
+WHAT NOT TO MERGE (Keep as separate flags):
+- Different financial metrics (revenue vs margins vs debt)
+- Different business segments/divisions  
+- Different time periods
+- Different types of concerns (operational vs financial vs regulatory)
+
+CONSOLIDATION PROCESS:
+1. Group related red flags together
+2. Create comprehensive description covering all aspects
+3. Combine all supporting quotes and evidence
+4. Maintain all speaker attributions and page references
+5. Ensure the consolidated flag captures the full scope of the concern
 
 OUTPUT FORMAT:
-Maintain the exact same format as the original analysis:
-1. The potential red flag you observed - [brief description]
-Original Quote: "[exact quote with speaker name]" (Page X)
+1. [Comprehensive red flag description covering all related issues]
+Original Quotes: "[Combined relevant quotes with speaker names]" (Page X, Y, Z)
 
-CRITICAL: Only remove clear duplicates. When in doubt, preserve the flag. Maintain all original formatting and context.
+2. [Next unique red flag]
+Original Quote: "[quote with speaker name]" (Page X)
+
+CRITICAL: Be aggressive in removing duplicates. If multiple flags discuss the same underlying issue, merge them. The goal is to have distinct, non-overlapping red flags while retaining all important context and evidence.
 </instruction>
 
 <context>
@@ -620,11 +805,11 @@ FIRST ITERATION ANALYSIS TO DEDUPLICATE:
 {first_response}
 </context>
 
-Provide deduplicated analysis with preserved context and formatting:"""
+Provide deduplicated analysis with merged duplicates and preserved evidence:"""
         
         second_response = llm._call(second_prompt)
         
-        # ITERATION 3: Categorization with structured prompt
+        # ITERATION 3: Categorization
         print("Running 3rd iteration - Categorization...")
         third_prompt = f"""<role>
 You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
@@ -678,7 +863,7 @@ Provide categorized analysis:"""
         
         third_response = llm._call(third_prompt)
         
-        # ITERATION 4: Summary generation with structured prompt
+        # ITERATION 4: Summary generation
         print("Running 4th iteration - Summary Generation...")
         fourth_prompt = f"""<role>
 You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
@@ -727,83 +912,56 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt)
         
-        # ITERATION 5: Direct Classification from 2nd Iteration Results
-        print("Running 5th iteration - Direct Classification from Deduplicated Results...")
+        # ITERATION 5: Enhanced Bucket-Based Classification
+        print("Running 5th iteration - Enhanced Bucket-Based Classification...")
         
-        # Step 1: Parse flags directly from 2nd iteration response
+        # Step 1: Parse flags from 2nd iteration response
         try:
-            unique_flags = []
-            
-            # Parse the structured response from 2nd iteration
+            flags = []
             lines = second_response.split('\n')
             for line in lines:
                 line = line.strip()
-                # Look for numbered red flags (1. 2. 3. etc.)
                 if re.match(r'^\d+\.\s+', line):
-                    # Extract the flag description (everything before "Original Quote:")
-                    if "Original Quote:" in line:
-                        flag_text = line.split("Original Quote:")[0]
-                        flag_text = re.sub(r'^\d+\.\s+', '', flag_text).strip()  # Remove numbering
+                    if "Original Quote" in line:
+                        flag_text = line.split("Original Quote")[0]
+                        flag_text = re.sub(r'^\d+\.\s+', '', flag_text).strip()
                         if "The potential red flag you observed - " in flag_text:
                             flag_text = flag_text.replace("The potential red flag you observed - ", "").strip()
                         if flag_text and len(flag_text) > 5:
-                            unique_flags.append(flag_text)
+                            flags.append(flag_text)
                     else:
-                        # If no "Original Quote:", take the whole line after number
                         flag_text = re.sub(r'^\d+\.\s+', '', line).strip()
                         if "The potential red flag you observed - " in flag_text:
                             flag_text = flag_text.replace("The potential red flag you observed - ", "").strip()
                         if flag_text and len(flag_text) > 5:
-                            unique_flags.append(flag_text)
+                            flags.append(flag_text)
             
-            # Remove any remaining artifacts or formatting issues
-            unique_flags = [flag.strip('[]').strip() for flag in unique_flags if flag.strip()]
-            
-            print(f"\nFlags extracted from 2nd iteration: {len(unique_flags)}")
+            flags = [flag.strip('[]').strip() for flag in flags if flag.strip()]
+            print(f"\nFlags extracted: {len(flags)}")
             
         except Exception as e:
-            logger.error(f"Error parsing flags from 2nd iteration: {e}")
-            unique_flags = ["Error in flag parsing"]
+            logger.error(f"Error parsing flags: {e}")
+            flags = ["Error in flag parsing"]
 
-        # Step 2: Define 15 criteria definitions
-        criteria_definitions = {
-            "debt_increase": "High: Debt increase by >=30% compared to previous reported balance sheet number; Low: Debt increase is less than 30% compared to previous reported balance sheet number",
-            "provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBIDTA; Low: provisioning or write-offs less than 25% of current quarter's EBIDTA",
-            "asset_decline": "High: Asset value falls by >=30% compared to previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
-            "receivable_days": "High: receivable days increase by >=30% compared to previous reported balance sheet number; Low: receivable days increase is less than 30% compared to previous reported balance sheet number",
-            "payable_days": "High: payable days increase by >=30% compared to previous reported balance sheet number; Low: payable days increase is less than 30% compared to previous reported balance sheet number",
-            "debt_ebitda": "High: Debt/EBITDA >= 3x; Low: Debt/EBITDA < 3x",
-            "revenue_decline": "High: revenue or profitability(profit before tax/profit after tax) falls by >=25% compared to previous reported quarter number; Low: revenue or profitability falls by less than 25% compared to previous reported quarter number",
-            "onetime_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBIDTA; Low: one-time expenses or losses less than 25% of current quarter's EBIDTA",
-            "margin_decline": "High: gross margin or operating margin falling more than 25% compared to previous reported quarter number; Low: gross margin or operating margin falling less than 25% compared to previous reported quarter number",
-            "cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number",
-            "short_term_debt": "High: Short-term debt or current liabilities increase by >=30% compared to previous reported balance sheet number; Low: Short-term debt or current liabilities increase is less than 30% compared to previous reported balance sheet number",
-            "management_issues": "High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy; Low: If there is a no clear concern for the company basis the discussion on the management or strategy related issues",
-            "regulatory_compliance": "High: If found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators; Low: If there is a no clear concern for the company basis the discussion on the regulatory issues",
-            "market_competition": "High: Any competitive intensity or new entrants, any decline in market share; Low: Low competitive intensity or new entrants, Stable or increasing market share",
-            "operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues; Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues"
-        }
-        
-        # Step 3: Classify each flag
+        # Step 2: Classify each flag using enhanced bucket approach
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
-        
-        if len(unique_flags) > 0 and unique_flags[0] != "Error in flag parsing":
-            for i, flag in enumerate(unique_flags, 1):
+
+        if len(flags) > 0 and flags[0] != "Error in flag parsing":
+            for i, flag in enumerate(flags, 1):
                 try:
-                    classification = classify_flag_against_criteria_simple(
-                        flag=flag,
-                        criteria_definitions=criteria_definitions,
-                        previous_year_data=previous_year_data, 
-                        llm=llm
-                    )
+                    print(f"Classifying flag {i}: {flag[:50]}...")
+                    
+                    # Use enhanced bucket-based classification
+                    classification = classify_flag_with_focused_buckets(flag, previous_year_data, llm)
                     
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': classification['matched_criteria'],
                         'risk_level': classification['risk_level'],
-                        'reasoning': classification['reasoning']
+                        'reasoning': classification['reasoning'],
+                        'bucket': classification.get('bucket', 'None')
                     })
                     
                     # Add to appropriate risk category
@@ -815,21 +973,21 @@ Provide factual category summaries:"""
                         
                 except Exception as e:
                     logger.error(f"Error classifying flag {i}: {e}")
-                    # Always default to low risk if classification fails
                     classification_results.append({
                         'flag': flag,
                         'matched_criteria': 'None',
                         'risk_level': 'Low',
-                        'reasoning': f'Classification failed: {str(e)}'
+                        'reasoning': f'Classification failed: {str(e)}',
+                        'bucket': 'Error'
                     })
                     low_risk_flags.append(flag)
                   
-                time.sleep(0.3)
-        
+                time.sleep(0.3)  # Rate limiting
+
         risk_counts = {
             'High': len(high_risk_flags),
             'Low': len(low_risk_flags),
-            'Total': len(unique_flags) if unique_flags and unique_flags[0] != "Error in flag parsing" else 0
+            'Total': len(flags) if flags and flags[0] != "Error in flag parsing" else 0
         }
         
         print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
@@ -845,21 +1003,13 @@ Provide factual category summaries:"""
             print(f"\n--- HIGH RISK FLAGS ---")
             print("  No high risk flags identified")
         
-        if low_risk_flags:
-            print(f"\n--- LOW RISK FLAGS ---")
-            for i, flag in enumerate(low_risk_flags, 1):
-                print(f"  {i}. {flag}")
-        else:
-            print(f"\n--- LOW RISK FLAGS ---")
-            print("  No low risk flags identified")
-        
         # Extract company info and create Word document
         print("\nCreating Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document with strict high risk summaries
+            # Create Word document
             word_doc_path = create_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -889,17 +1039,17 @@ Provide factual category summaries:"""
             "iteration": [1, 2, 3, 4, 5],
             "stage": [
                 "Initial Analysis",
-                "Enhanced Deduplication with Context Preservation",
+                "Enhanced Deduplication",
                 "Categorization",
-                "Summary Generation",
-                "Direct Classification from Deduplicated Results"
+                "Summary Generation", 
+                "Enhanced Bucket-Based Classification"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Direct Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total unique flags"
+                f"Enhanced Bucket Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total flags"
             ],
             "timestamp": [timestamp] * 5
         })
@@ -920,40 +1070,69 @@ Provide factual category summaries:"""
         logger.error(f"Error processing {pdf_name}: {str(e)}")
         return None
 
+# ==============================================================================
+# MAIN FUNCTION - EASY TO CONFIGURE
+# ==============================================================================
+
 def main():
-    """Main function to process all PDFs in the specified folder"""
+    """Main function to process all PDFs - EASY TO CONFIGURE"""
     
-    # Configuration
-    pdf_folder_path = r"kalyan_pdf" 
-    queries_csv_path = r"EWS_prompts_v2_2.xlsx"
-    output_folder = r"kalyan_results_enhanced"
-
-    api_key = "8496498c"
-    azure_endpoint = "https://crisil-pp-gpt.openai.azure.com"
-    api_version = "2025-01-01-preview"
-    deployment_name = "gpt-4.1"
-  
-    # Enhanced structured previous year data
-    previous_year_data = """
-Previous reported Debt	Mar-24	4486Cr
-Current quarter ebidta	Sept-24	412Cr
-Previous reported asset value	Mar-24	12818Cr
-Previous reported receivable days	Mar-24	6days
-Previous reported payable days	Mar-24	45days
-Previous reported revenue	June-24	5535Cr
-Previous reported profit before tax	June-24	237Cr
-Previous reported operating margin	June-24	7%
-Previous reported cash balance	Mar-24	975Cr
-Previous reported current liabilities	Mar-24	3317Cr
-
+    # ==============================================================================
+    # CONFIGURATION SECTION - EASY TO MODIFY
+    # ==============================================================================
+    
+    # API Configuration
+    API_CONFIG = {
+        "api_key": "8496b8c",
+        "azure_endpoint": "https://crisil-pp-gpt.openai.azure.com",
+        "api_version": "2025-01-01-preview",
+        "deployment_name": "gpt-4.1"
+    }
+    
+    # File Paths Configuration
+    PATHS_CONFIG = {
+        "pdf_folder_path": r"kalyan_pdf",
+        "queries_csv_path": r"EWS_prompts_v2_2.xlsx", 
+        "output_folder": r"kalyan_results_enhanced"
+    }
+    
+    # Previous Year Data - EASY TO CHANGE FOR EACH COMPANY
+    PREVIOUS_YEAR_DATA = """
+Debt as per Previous reported balance sheet number	Mar-23	80329	Cr
+Current quarter EBITDA	March-24	11511	Cr
+Asset value as per previous reported balance sheet number	Mar-23	189455	Cr
+Receivable days as per previous reported balance sheet number	Mar-23	10	days
+Payable days as per Previous reported balance sheet number	Mar-23	91	days
+Revenue as per previous reported quarter number	Dec-23	35541	Cr
+profit before tax as per previous reported quarter number	Dec-23	4105	Cr
+profit after tax as per previous reported quarter number	Dec-23	2868	Cr
+EBITDA as per previous reported quarter number	Dec-23	8531	Cr
+Operating margin as per previous quarter number	Dec-23	25%
+Cash balance as per previous reported balance sheet number	Mar-23	9254	Cr
+Short term borrowings as per the previous reported balance sheet number	Mar-23	36407	Cr
+previous reported net worth from balance sheet	Mar-23	47896	Cr
+Receivables as per previous reported balance sheet number	Mar-23	6414	Cr
+Payables as per Previous reported balance sheet number	Mar-23	11043	Cr
 """
-    os.makedirs(output_folder, exist_ok=True)
+    
+    # ==============================================================================
+    # PROCESSING LOGIC
+    # ==============================================================================
+    
+    print("=== ENHANCED PDF FINANCIAL ANALYSIS SYSTEM ===")
+    print("Configuration loaded from top of file...")
+    
+    # Create output folder
+    os.makedirs(PATHS_CONFIG["output_folder"], exist_ok=True)
     
     # Process all PDFs in folder
-    pdf_files = glob.glob(os.path.join(pdf_folder_path, "*.pdf"))
+    pdf_files = glob.glob(os.path.join(PATHS_CONFIG["pdf_folder_path"], "*.pdf"))
     if not pdf_files:
-        print(f"No PDF files found in {pdf_folder_path}")
+        print(f"No PDF files found in {PATHS_CONFIG['pdf_folder_path']}")
         return    
+    
+    print(f"Found {len(pdf_files)} PDF files to process")
+    print(f"Using previous year data: {len(PREVIOUS_YEAR_DATA.strip().split(chr(10)))} metrics")
     
     for i, pdf_file in enumerate(pdf_files, 1):
         print(f"\n{'='*60}")
@@ -964,13 +1143,13 @@ Previous reported current liabilities	Mar-24	3317Cr
         
         result = process_pdf_enhanced_pipeline(
             pdf_path=pdf_file,
-            queries_csv_path=queries_csv_path,
-            previous_year_data=previous_year_data,
-            output_folder=output_folder,
-            api_key=api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=api_version,
-            deployment_name=deployment_name
+            queries_csv_path=PATHS_CONFIG["queries_csv_path"],
+            previous_year_data=PREVIOUS_YEAR_DATA,
+            output_folder=PATHS_CONFIG["output_folder"],
+            api_key=API_CONFIG["api_key"],
+            azure_endpoint=API_CONFIG["azure_endpoint"],
+            api_version=API_CONFIG["api_version"],
+            deployment_name=API_CONFIG["deployment_name"]
         )
         
         processing_time = time.time() - start_time
@@ -982,3 +1161,50 @@ Previous reported current liabilities	Mar-24	3317Cr
 
 if __name__ == "__main__":
     main()
+
+# ==============================================================================
+# HOW TO CHANGE CONFIGURATION FOR DIFFERENT COMPANIES:
+# ==============================================================================
+"""
+TO CHANGE CONFIGURATION FOR A NEW COMPANY:
+
+1. Open the main() function and locate the CONFIGURATION SECTION
+2. Modify the following sections as needed:
+
+API_CONFIG:
+- Update api_key, azure_endpoint, api_version, deployment_name
+
+PATHS_CONFIG:
+- Update pdf_folder_path (where your PDFs are located)
+- Update queries_csv_path (your prompts file)
+- Update output_folder (where results will be saved)
+
+PREVIOUS_YEAR_DATA:
+- Replace with your company's data in this exact format:
+  Metric Name[TAB]Date[TAB]Value[TAB]Unit
+
+Example for a different company:
+PREVIOUS_YEAR_DATA = '''
+Debt as per Previous reported balance sheet number	Mar-22	45000	Cr
+Current quarter EBITDA	Dec-23	5500	Cr
+Asset value as per previous reported balance sheet number	Mar-22	95000	Cr
+... (add all your metrics)
+'''
+
+SUPPORTED METRICS (keep these names exactly):
+- Debt as per Previous reported balance sheet number
+- Current quarter EBITDA  
+- Asset value as per previous reported balance sheet number
+- Receivable days as per previous reported balance sheet number
+- Payable days as per Previous reported balance sheet number
+- Revenue as per previous reported quarter number
+- profit before tax as per previous reported quarter number
+- profit after tax as per previous reported quarter number
+- EBITDA as per previous reported quarter number
+- Operating margin as per previous quarter number
+- Cash balance as per previous reported balance sheet number
+- Short term borrowings as per the previous reported balance sheet number
+- previous reported net worth from balance sheet
+- Receivables as per previous reported balance sheet number
+- Payables as per Previous reported balance sheet number
+"""
