@@ -26,6 +26,26 @@ def getFilehash(file_path: str):
     """Generate SHA3-256 hash of a file"""
     with open(file_path, 'rb') as f:
         return hashlib.sha3_256(f.read()).hexdigest()
+
+def load_first_prompt_from_excel(queries_csv_path: str) -> str:
+    """Load the first prompt from Excel/CSV file"""
+    try:
+        if queries_csv_path.endswith('.xlsx'):
+            df = pd.read_excel(queries_csv_path)
+        else:
+            df = pd.read_csv(queries_csv_path)
+        
+        # Look for the prompt column
+        if 'prompt' in df.columns and len(df) > 0:
+            first_prompt = str(df['prompt'].iloc[0])
+            return first_prompt
+        else:
+            logger.warning(f"No 'prompt' column found in {queries_csv_path}. Using default prompt.")
+            return "Analyze this document for potential red flags."
+        
+    except Exception as e:
+        logger.error(f"Error loading prompt from Excel: {e}")
+        return "Analyze this document for potential red flags."
  
 class AzureOpenAILLM:
     """Azure OpenAI gpt-4.1 LLM class"""
@@ -310,112 +330,63 @@ def process_pdf_4_iteration_pipeline(pdf_path: str, queries_csv_path: str,
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
         
-        # Load first query from CSV/Excel
-        try:
-            if queries_csv_path.endswith('.xlsx'):
-                queries_df = pd.read_excel(queries_csv_path)
-            else:
-                queries_df = pd.read_csv(queries_csv_path)
-            
-            if len(queries_df) == 0 or "prompt" not in queries_df.columns:
-                first_query = "Analyze this document for potential red flags."
-            else:
-                first_query = queries_df["prompt"].tolist()[0]
-        except Exception as e:
-            logger.warning(f"Error loading queries file: {e}. Using default query.")
-            first_query = "Analyze this document for potential red flags."
+        # Load first prompt from Excel
+        first_query = load_first_prompt_from_excel(queries_csv_path)
         
-        # ITERATION 1: Initial red flag identification
-        print("Running 1st iteration - Initial Analysis...")
-        first_prompt = f"""<role>
-You are an expert financial analyst with 15+ years of experience specializing in identifying red flags from earnings call transcripts and financial documents.
-</role>
-
-<system_prompt>
-You excel at comprehensive document analysis, identifying subtle financial risks, and providing detailed evidence-based assessments with precise documentation.
-</system_prompt>
-
-<instruction>
-Analyze the ENTIRE document and identify ALL potential red flags comprehensively.
-
-ANALYSIS REQUIREMENTS:
-- Review every section of the document thoroughly
-- Identify financial, operational, strategic, and management risks
-- Focus on quantitative concerns with specific data points
-- Document exact quotes with speaker attribution
-- Number each red flag sequentially (1, 2, 3, etc.)
-- Include page references where available
-
-OUTPUT FORMAT:
-For each red flag:
-1. The potential red flag you observed - [brief description]
-Original Quote: "[exact quote with speaker name]" (Page X)
-
-CRITICAL: Ensure comprehensive analysis of the entire document.
-</instruction>
+        # ITERATION 1: Use the exact prompt from Excel
+        print("Running 1st iteration - Using prompt from Excel...")
+        first_prompt = f"""{first_query}
 
 <context>
 COMPLETE DOCUMENT TO ANALYZE:
 {context}
-
-SPECIFIC QUESTION: {first_query}
-</context>
-
-Provide comprehensive red flag analysis:"""
+</context>"""
         
         first_response = llm._call(first_prompt)
         
-        # ITERATION 2: Enhanced Deduplication
-        print("Running 2nd iteration - Enhanced Deduplication...")
-        second_prompt = f"""<role>
-You are an expert financial analyst specializing in precise deduplication while maintaining comprehensive document analysis integrity.
-</role>
+        # ITERATION 2: Improved Deduplication while preserving context
+        print("Running 2nd iteration - Deduplication with Context Preservation...")
+        second_prompt = f"""You are tasked with removing duplicate red flags from the analysis while preserving ALL original context, formatting, and details.
 
-<system_prompt>
-You excel at identifying and removing duplicate red flags while preserving all original context, quotes, page references, and detailed analysis structure from the initial assessment.
-</system_prompt>
+DEDUPLICATION INSTRUCTIONS:
+1. Review the red flags identified in the first iteration
+2. Remove ONLY red flags that are exactly the same or refer to the identical underlying issue
+3. When removing duplicates, keep the most detailed version with complete context
+4. Preserve ALL original quotes, speaker names, page references, and numbering
+5. Maintain the exact same output format as the first iteration
+6. Do NOT merge different issues even if they seem related
+7. Keep all unique concerns, even minor ones
+8. Preserve the sequential numbering structure
 
-<instruction>
-Remove ONLY duplicate red flags from the analysis while preserving ALL other content exactly as provided.
+WHAT CONSTITUTES A DUPLICATE:
+- Red flags describing the exact same financial metric/issue
+- Multiple mentions of the same specific quote from the same speaker
+- Identical concerns worded differently but referring to the same data point
 
-DEDUPLICATION CRITERIA:
-1. Remove red flags that describe the SAME underlying financial concern
-2. Keep the most comprehensive version when duplicates are found
-3. Merge similar flags only if they address identical issues with different wording
-4. Preserve ALL original quotes, speaker attributions, and page references
-5. Maintain the exact numbering sequence and formatting structure
-6. Keep ALL unique red flags even if they seem minor
-7. Do NOT lose any substantive analysis or context
+WHAT TO KEEP SEPARATE:
+- Different financial metrics (revenue vs profit vs cash flow)
+- Different time periods or quarters
+- Different speakers discussing related but distinct issues
+- Similar concerns affecting different business segments
 
-WHAT TO PRESERVE COMPLETELY:
-- All original quotes with speaker names and page references
-- Sequential numbering format (1, 2, 3, etc.)
-- Detailed descriptions and evidence
-- All unique financial concerns regardless of severity
-- Complete context and supporting information
-
-DEDUPLICATION EXAMPLES:
-- "Revenue declined 15%" + "Sales performance showing decline" = Keep more specific one with numbers
-- "Debt increased significantly" + "Higher borrowing noted" = Merge into comprehensive statement
-- "Cash flow concerns" + "Working capital issues" = Keep both (different issues)
-
-OUTPUT FORMAT:
-Maintain the exact same format as the original analysis:
-1. The potential red flag you observed - [brief description]
+OUTPUT FORMAT (maintain exactly):
+1. The potential red flag you observed - [description]
 Original Quote: "[exact quote with speaker name]" (Page X)
 
-CRITICAL: Only remove clear duplicates. When in doubt, preserve the flag. Maintain all original formatting and context.
-</instruction>
+2. The potential red flag you observed - [description]  
+Original Quote: "[exact quote with speaker name]" (Page X)
+
+CRITICAL: Only remove clear duplicates. Preserve ALL context, quotes, and formatting from the original analysis.
 
 <context>
-ORIGINAL DOCUMENT CONTEXT:
+ORIGINAL DOCUMENT:
 {context}
 
 FIRST ITERATION ANALYSIS TO DEDUPLICATE:
 {first_response}
 </context>
 
-Provide deduplicated analysis with preserved context and formatting:"""
+Provide deduplicated analysis maintaining original format and context:"""
         
         second_response = llm._call(second_prompt)
         
@@ -568,8 +539,8 @@ Provide factual category summaries:"""
             "pdf_name": [pdf_name] * 4,
             "iteration": [1, 2, 3, 4],
             "stage": [
-                "Initial Analysis",
-                "Enhanced Deduplication with Context Preservation",
+                "Initial Analysis from Excel Prompt",
+                "Deduplication with Context Preservation",
                 "Categorization",
                 "Summary Generation"
             ],
