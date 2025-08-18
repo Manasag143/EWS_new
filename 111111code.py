@@ -157,6 +157,45 @@ Extract company information:"""
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
 
+# ==============================================================================
+# NEW EXCEL READING FUNCTIONS
+# ==============================================================================
+
+def read_prompts_and_keywords_from_excel(queries_csv_path: str):
+    """Read main prompt and split keywords from existing Excel structure"""
+    
+    try:
+        if queries_csv_path.endswith('.xlsx'):
+            queries_df = pd.read_excel(queries_csv_path)
+        else:
+            queries_df = pd.read_csv(queries_csv_path)
+        
+        if len(queries_df) < 3 or "prompt" not in queries_df.columns:
+            # Fallback if structure is not as expected
+            return (
+                "Analyze this document for potential red flags.",
+                "<reference>No keywords part 1 available</reference>",
+                "<reference>No keywords part 2 available</reference>"
+            )
+        
+        # Extract the three rows
+        main_prompt = queries_df["prompt"].tolist()[0]        # Row 1: Main prompt
+        keywords_part_1 = queries_df["prompt"].tolist()[1]    # Row 2: Keywords 1-32
+        keywords_part_2 = queries_df["prompt"].tolist()[2]    # Row 3: Keywords 33-63
+        
+        return main_prompt, keywords_part_1, keywords_part_2
+        
+    except Exception as e:
+        logger.warning(f"Error loading queries file: {e}. Using defaults.")
+        return (
+            "Analyze this document for potential red flags.",
+            "<reference>No keywords part 1 available</reference>", 
+            "<reference>No keywords part 2 available</reference>"
+        )
+
+# ==============================================================================
+# CRITERIA BUCKETS AND CLASSIFICATION FUNCTIONS
+# ==============================================================================
 
 def create_criteria_buckets():
     """Organize 23 criteria into 6 buckets for better LLM classification"""
@@ -380,7 +419,6 @@ IMPORTANT: Only consider the criteria listed above for this bucket."""
     
     return bucket_results
 
-
 def parse_bucket_results_to_classifications(bucket_results: Dict[str, str], all_flags_with_context: List[str]) -> List[Dict[str, str]]:
     """
     Parse the bucket analysis results into individual flag classifications
@@ -482,7 +520,6 @@ def parse_bucket_results_to_classifications(bucket_results: Dict[str, str], all_
     
     return flag_classifications
 
-
 def extract_flags_with_complete_context(second_response: str) -> List[str]:
     """
     Enhanced flag extraction that preserves complete context including original quotes and page references
@@ -526,6 +563,7 @@ def extract_flags_with_complete_context(second_response: str) -> List[str]:
             cleaned_flags.append(flag)
     
     return cleaned_flags
+
 # ==============================================================================
 # DOCUMENT GENERATION FUNCTIONS
 # ==============================================================================
@@ -796,15 +834,15 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
             return None
 
 # ==============================================================================
-# MAIN PROCESSING PIPELINE
+# MAIN PROCESSING PIPELINE WITH SPLIT FIRST ITERATION
 # ==============================================================================
 
-def process_pdf_enhanced_pipeline_with_context(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Enhanced processing pipeline that uses complete flag context including original quotes for classification
+    Enhanced processing pipeline with split first iteration using existing Excel structure
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -822,25 +860,19 @@ def process_pdf_enhanced_pipeline_with_context(pdf_path: str, queries_csv_path: 
         docs = mergeDocs(pdf_path, split_pages=False)
         context = docs[0]["context"]
         
-        # Load first query from CSV/Excel
-        try:
-            if queries_csv_path.endswith('.xlsx'):
-                queries_df = pd.read_excel(queries_csv_path)
-            else:
-                queries_df = pd.read_csv(queries_csv_path)
-            
-            if len(queries_df) == 0 or "prompt" not in queries_df.columns:
-                first_query = "Analyze this document for potential red flags."
-            else:
-                first_query = queries_df["prompt"].tolist()[0]
-        except Exception as e:
-            logger.warning(f"Error loading queries file: {e}. Using default query.")
-            first_query = "Analyze this document for potential red flags."
+        # Read prompts and keywords from Excel (MODIFIED SECTION)
+        main_prompt, keywords_part_1, keywords_part_2 = read_prompts_and_keywords_from_excel(queries_csv_path)
         
-        # ITERATIONS 1-4 remain the same...
-        print("Running 1st iteration - Initial Analysis...")
-        first_prompt = f"""
-{first_query}
+        print(f"Main prompt loaded: {main_prompt[:100]}...")
+        print(f"Keywords part 1 loaded: {len(keywords_part_1)} characters")
+        print(f"Keywords part 2 loaded: {len(keywords_part_2)} characters")
+        
+        # ITERATION 1: Split Analysis (MODIFIED SECTION)
+        print("Running 1st iteration - Split Analysis (2 LLM calls)...")
+        
+        # Create prompt template
+        prompt_template = f"""{main_prompt}
+
 <context>
 COMPLETE DOCUMENT TO ANALYZE:
 {context}
@@ -848,8 +880,23 @@ COMPLETE DOCUMENT TO ANALYZE:
 
 Provide comprehensive red flag analysis:"""
         
-        first_response = llm._call(first_prompt)
+        # Replace <reference></reference> placeholder with actual keywords for each call
+        first_prompt_part_1 = prompt_template.replace('<reference></reference>', keywords_part_1)
+        first_prompt_part_2 = prompt_template.replace('<reference></reference>', keywords_part_2)
         
+        # Make two LLM calls
+        print("  - Analyzing keywords part 1 (1-32)...")
+        first_response_part_1 = llm._call(first_prompt_part_1)
+        
+        print("  - Analyzing keywords part 2 (33-63)...")
+        first_response_part_2 = llm._call(first_prompt_part_2)
+        
+        # Merge the two responses
+        first_response = first_response_part_1 + "\n\n" + first_response_part_2
+        
+        print(f"Split first iteration completed. Combined response length: {len(first_response)} characters")
+        
+        # ITERATION 2: Enhanced Deduplication (UNCHANGED)
         print("Running 2nd iteration - Enhanced Deduplication...")
         second_prompt = f"""<role>
 You are an expert financial analyst specializing in identifying and eliminating duplicate red flags while maintaining comprehensive analysis integrity.
@@ -898,7 +945,7 @@ Provide deduplicated analysis with merged duplicates and preserved evidence:"""
         
         second_response = llm._call(second_prompt)
         
-        # Continue with iterations 3 and 4...
+        # ITERATION 3: Categorization (UNCHANGED)
         print("Running 3rd iteration - Categorization...")
         third_prompt = f"""<role>
 You are a senior financial analyst expert in financial risk categorization with deep knowledge of balance sheet analysis, P&L assessment, and corporate risk frameworks.
@@ -949,6 +996,7 @@ Provide categorized analysis:"""
         
         third_response = llm._call(third_prompt)
         
+        # ITERATION 4: Summary Generation (UNCHANGED)
         print("Running 4th iteration - Summary Generation...")
         fourth_prompt = f"""<role>
 You are an expert financial summarization specialist with expertise in creating concise, factual, and comprehensive summaries that preserve critical quantitative data and key insights.
@@ -997,15 +1045,13 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt)
         
-        # ITERATION 5: EFFICIENT Bucket-Based Classification (6 LLM calls total)
+        # ITERATION 5: Efficient Bucket-Based Classification (UNCHANGED)
         print("Running 5th iteration - Efficient Bucket-Based Classification...")
         
-        # Step 1: Extract flags WITH complete context (quotes + page references)
         try:
             flags_with_context = extract_flags_with_complete_context(second_response)
             print(f"\nFlags with context extracted: {len(flags_with_context)}")
             
-            # Print first flag as example
             if flags_with_context:
                 print(f"Example flag with context:\n{flags_with_context[0][:200]}...")
             
@@ -1013,7 +1059,6 @@ Provide factual category summaries:"""
             logger.error(f"Error parsing flags with context: {e}")
             flags_with_context = ["Error in flag parsing"]
 
-        # Step 2: Efficient classification using 6 total LLM calls for all flags
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
@@ -1022,13 +1067,9 @@ Provide factual category summaries:"""
             try:
                 print(f"Analyzing all {len(flags_with_context)} flags using 6 bucket calls.")
                 
-                # Use efficient bucket analysis - 6 LLM calls total
                 bucket_results = classify_all_flags_with_buckets(flags_with_context, previous_year_data, llm)
-                
-                # Parse bucket results into individual flag classifications
                 classification_results = parse_bucket_results_to_classifications(bucket_results, flags_with_context)
                 
-                # Separate into high and low risk categories
                 for result in classification_results:
                     if (result['risk_level'].lower() == 'high' and 
                         result['matched_criteria'] != 'None'):
@@ -1038,7 +1079,6 @@ Provide factual category summaries:"""
                         
             except Exception as e:
                 logger.error(f"Error in efficient bucket classification: {e}")
-                # Fallback: mark all as low risk
                 for flag_with_context in flags_with_context:
                     flag_description = flag_with_context.split('\n')[0]
                     flag_description = re.sub(r'^\d+\.\s+', '', flag_description).strip()
@@ -1059,7 +1099,7 @@ Provide factual category summaries:"""
             'Total': len(flags_with_context) if flags_with_context and flags_with_context[0] != "Error in flag parsing" else 0
         }
         
-        print(f"\n=== EFFICIENT CLASSIFICATION RESULTS (6 LLM calls total) ===")
+        print(f"\n=== SPLIT ITERATION CLASSIFICATION RESULTS (2+6 LLM calls total) ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
@@ -1072,13 +1112,12 @@ Provide factual category summaries:"""
             print(f"\n--- HIGH RISK FLAGS ---")
             print("  No high risk flags identified using efficient bucket analysis")
         
-        # Rest of the processing (Word document creation, etc.) remains the same...
+        # Word Document Creation (UNCHANGED)
         print("\nCreating Word document...")
         try:
             company_info = extract_company_info_from_pdf(pdf_path, llm)
             summary_by_categories = parse_summary_by_categories(fourth_response)
            
-            # Create Word document
             word_doc_path = create_word_document(
                 pdf_name=pdf_name,
                 company_info=company_info,
@@ -1099,22 +1138,21 @@ Provide factual category summaries:"""
             logger.error(f"Error creating Word document: {e}")
             word_doc_path = None
        
-        # Save all results to CSV files
+        # Save all results to CSV files (MODIFIED)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
-        # Save pipeline results
         results_summary = pd.DataFrame({
             "pdf_name": [pdf_name] * 5,
             "iteration": [1, 2, 3, 4, 5],
             "stage": [
-                "Initial Analysis",
+                "Split Initial Analysis (2 calls)",
                 "Enhanced Deduplication",
                 "Categorization",
                 "Summary Generation", 
                 "Enhanced Context-Based Classification"
             ],
             "response": [
-                first_response,
+                f"Split Analysis: Part1={len(first_response_part_1)} chars, Part2={len(first_response_part_2)} chars",
                 second_response,
                 third_response,
                 fourth_response,
@@ -1123,22 +1161,24 @@ Provide factual category summaries:"""
             "timestamp": [timestamp] * 5
         })
        
-        results_file = os.path.join(output_folder, f"{pdf_name}_enhanced_context_pipeline_results.csv")
+        results_file = os.path.join(output_folder, f"{pdf_name}_split_iteration_pipeline_results.csv")
         results_summary.to_csv(results_file, index=False)
         
-        # Save detailed classification results with context
         if len(classification_results) > 0:
             classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_context_classification.csv")
+            classification_file = os.path.join(output_folder, f"{pdf_name}_split_iteration_classification.csv")
             classification_df.to_csv(classification_file, index=False)
 
-        print(f"\n=== EFFICIENT CONTEXT-BASED PROCESSING COMPLETE FOR {pdf_name} ===")
+        print(f"\n=== SPLIT ITERATION PROCESSING COMPLETE FOR {pdf_name} ===")
         return results_summary
        
     except Exception as e:
         logger.error(f"Error processing {pdf_name}: {str(e)}")
         return None
 
+# ==============================================================================
+# MAIN FUNCTION
+# ==============================================================================
 
 def main(): 
     API_CONFIG = {
@@ -1150,8 +1190,8 @@ def main():
     
     PATHS_CONFIG = {
         "pdf_folder_path": r"vedanta_pdf",
-        "queries_csv_path": r"EWS_prompts_v2_2.xlsx", 
-        "output_folder": r"vedanta_results_enhanced"
+        "queries_csv_path": r"EWS_prompts_v2_2.xlsx",  # Your existing Excel file
+        "output_folder": r"vedanta_results_split_iteration"
     }
     
     PREVIOUS_YEAR_DATA = """
@@ -1187,7 +1227,8 @@ Payables as per Previous reported balance sheet number	Mar-23	11043Cr
         
         start_time = time.time()
         
-        result = process_pdf_enhanced_pipeline_with_context(
+        # Use the new split iteration function
+        result = process_pdf_enhanced_pipeline_with_split_iteration(
             pdf_path=pdf_file,
             queries_csv_path=PATHS_CONFIG["queries_csv_path"],
             previous_year_data=PREVIOUS_YEAR_DATA,
@@ -1207,4 +1248,3 @@ Payables as per Previous reported balance sheet number	Mar-23	11043Cr
 
 if __name__ == "__main__":
     main()
-
