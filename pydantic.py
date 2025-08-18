@@ -1,6 +1,6 @@
-def classify_flag_with_focused_buckets_enhanced(flag_with_context: str, previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+def classify_all_flags_with_buckets(all_flags_with_context: List[str], previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, List[Dict[str, str]]]:
     """
-    Enhanced classification using complete flag context including original quotes and page references
+    Efficient classification using 6 total LLM calls for all flags combined - one call per bucket
     """
     
     criteria_buckets = create_criteria_buckets()
@@ -15,17 +15,22 @@ def classify_flag_with_focused_buckets_enhanced(flag_with_context: str, previous
         "Market & Operational Risks"
     ]
     
-    best_match = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match found', 'confidence': 0}
+    # Prepare all flags text for analysis
+    all_flags_text = ""
+    for i, flag in enumerate(all_flags_with_context, 1):
+        all_flags_text += f"\n--- FLAG {i} ---\n{flag}\n"
+    
+    bucket_results = {}
     
     for i, (criteria_bucket, data_bucket, bucket_name) in enumerate(zip(criteria_buckets, data_buckets, bucket_names)):
         criteria_list = "\n".join([f"{name}: {desc}" for name, desc in criteria_bucket.items()])
         
-        # Enhanced prompt with original context for better classification
+        # Enhanced prompt for bulk analysis
         if i >= 4:  # Buckets 5 and 6 contain qualitative criteria
-            prompt = f"""Analyze this red flag with its ORIGINAL CONTEXT against the {bucket_name} criteria.
+            prompt = f"""Analyze ALL red flags below against the {bucket_name} criteria with ENHANCED QUALITATIVE ASSESSMENT.
 
-RED FLAG WITH COMPLETE CONTEXT TO ANALYZE:
-{flag_with_context}
+ALL RED FLAGS TO ANALYZE:
+{all_flags_text}
 
 RELEVANT CRITERIA FOR THIS BUCKET:
 {criteria_list}
@@ -33,36 +38,36 @@ RELEVANT CRITERIA FOR THIS BUCKET:
 RELEVANT PREVIOUS YEAR DATA FOR COMPARISON:
 {data_bucket}
 
-ENHANCED CLASSIFICATION INSTRUCTIONS:
-1. Use the ORIGINAL QUOTES and specific details from the flag context for precise analysis
-2. Extract exact numbers, percentages, and quantitative data from the original quotes
-3. For management_issues: Look for SPECIFIC evidence in quotes of senior leadership changes, investigations, or governance failures
-4. For regulatory_compliance: Look for SPECIFIC penalties, violations, or regulatory warnings mentioned in quotes
-5. For market_competition: Look for QUANTIFIED market share losses or material competitive impacts in quotes
-6. For operational_disruptions: Look for SPECIFIC facility issues, supply chain breaks, or operational failures in quotes
-7. Use speaker attribution (CEO, CFO, Management) to assess credibility and severity
-8. Consider page references to verify source authenticity
+SPECIAL INSTRUCTIONS FOR QUALITATIVE ASSESSMENT:
+- For management_issues: Look for SPECIFIC evidence of senior leadership changes, investigations, or governance failures
+- For regulatory_compliance: Look for SPECIFIC penalties, violations, or regulatory warnings mentioned
+- For market_competition: Look for QUANTIFIED market share losses or material competitive impacts
+- For operational_disruptions: Look for SPECIFIC facility issues, supply chain breaks, or operational failures
 
 ANALYSIS TASK:
-1. Extract specific numerical data from the original quotes
-2. Compare extracted numbers against criteria thresholds using previous year data
-3. Assess qualitative severity based on speaker statements and context
-4. Rate confidence (1-10) based on availability of specific evidence in quotes
+1. Review each flag against the criteria for this bucket
+2. Extract specific evidence from original quotes where available
+3. Apply STRICT HIGH RISK thresholds for qualitative criteria
+4. Provide analysis for each flag that matches any criteria in this bucket
 
-RESPONSE FORMAT:
-Matched_Criteria: [exact criteria name or "None"]
+RESPONSE FORMAT - For each matching flag:
+FLAG_[number]: [flag description]
+Matched_Criteria: [exact criteria name]
 Risk_Level: [High or Low]
 Confidence: [1-10]
-Extracted_Data: [specific numbers/percentages from quotes, or "N/A" for qualitative]
-Quote_Analysis: [analysis of what the original quote reveals about risk level]
-Reasoning: [detailed explanation using specific evidence from quotes and calculations]
+Quote_Evidence: [specific quotes that support the classification]
+Reasoning: [detailed explanation with evidence]
 
-IMPORTANT: Use the ORIGINAL QUOTES as primary evidence source for classification decisions."""
+---
+
+Only include flags that match criteria in this bucket. If no flags match, respond with "No flags match {bucket_name} criteria."
+
+IMPORTANT: Be CONSERVATIVE with qualitative High Risk classifications."""
         else:
-            prompt = f"""Analyze this red flag with its ORIGINAL CONTEXT against the {bucket_name} criteria.
+            prompt = f"""Analyze ALL red flags below against the {bucket_name} criteria.
 
-RED FLAG WITH COMPLETE CONTEXT TO ANALYZE:
-{flag_with_context}
+ALL RED FLAGS TO ANALYZE:
+{all_flags_text}
 
 RELEVANT CRITERIA FOR THIS BUCKET:
 {criteria_list}
@@ -70,78 +75,147 @@ RELEVANT CRITERIA FOR THIS BUCKET:
 RELEVANT PREVIOUS YEAR DATA FOR COMPARISON:
 {data_bucket}
 
-ENHANCED ANALYSIS INSTRUCTIONS:
-1. Extract EXACT numbers and percentages from the original quotes
-2. Use the original quotes as the PRIMARY source of quantitative data
-3. Calculate percentage changes using extracted data vs previous year benchmarks
-4. Consider speaker credibility (management vs analyst statements)
-5. Use page references to establish source reliability
+ANALYSIS INSTRUCTIONS:
+1. Extract EXACT numbers and percentages from original quotes in each flag
+2. Calculate percentage changes using previous year data benchmarks
+3. Compare against criteria thresholds (>25%, >30%, >3x, etc.)
+4. Analyze each flag independently against this bucket's criteria
 
 ANALYSIS TASK:
-1. Extract specific numerical values from original quotes
-2. Calculate percentage changes using previous year data
-3. Compare against criteria thresholds (>25%, >30%, >3x, etc.)
-4. Rate confidence (1-10) based on quality of numerical evidence in quotes
+1. Review each flag for numerical data that matches this bucket's criteria
+2. Extract specific values from original quotes
+3. Calculate percentage changes where applicable
+4. Determine High/Low risk based on thresholds
 
-RESPONSE FORMAT:
-Matched_Criteria: [exact criteria name or "None"]
+RESPONSE FORMAT - For each matching flag:
+FLAG_[number]: [flag description]
+Matched_Criteria: [exact criteria name]
 Risk_Level: [High or Low]
 Confidence: [1-10]
 Extracted_Data: [specific numbers from quotes]
-Calculation: [show percentage change calculations using extracted data]
-Quote_Analysis: [what the original quote reveals numerically]
-Reasoning: [explanation with specific calculations and quote evidence]
+Calculation: [percentage change calculations]
+Reasoning: [explanation with calculations]
 
-IMPORTANT: Prioritize ORIGINAL QUOTE data over summary descriptions for all numerical assessments."""
+---
+
+Only include flags that match criteria in this bucket. If no flags match, respond with "No flags match {bucket_name} criteria."
+
+IMPORTANT: Only consider the criteria listed above for this bucket."""
 
         try:
+            print(f"Analyzing all flags against {bucket_name} bucket...")
             response = llm._call(prompt, temperature=0.0)
+            bucket_results[bucket_name] = response
             
-            # Parse enhanced response
-            result = {'matched_criteria': 'None', 'risk_level': 'Low', 'reasoning': 'No match', 'confidence': 0}
-            
-            lines = response.strip().split('\n')
-            for line in lines:
-                if 'Matched_Criteria:' in line:
-                    result['matched_criteria'] = line.split(':', 1)[1].strip().strip('"')
-                elif 'Risk_Level:' in line:
-                    result['risk_level'] = line.split(':', 1)[1].strip()
-                elif 'Confidence:' in line:
-                    try:
-                        confidence_text = line.split(':', 1)[1].strip()
-                        result['confidence'] = int(''.join(filter(str.isdigit, confidence_text)))
-                    except:
-                        result['confidence'] = 5
-                elif 'Reasoning:' in line:
-                    result['reasoning'] = line.split(':', 1)[1].strip()
-                elif 'Extracted_Data:' in line:
-                    extracted_data = line.split(':', 1)[1].strip()
-                    if extracted_data and extracted_data != "N/A":
-                        result['reasoning'] = f"Extracted: {extracted_data}. {result['reasoning']}"
-                elif 'Calculation:' in line:
-                    calculation = line.split(':', 1)[1].strip()
-                    if calculation and calculation != "N/A":
-                        result['reasoning'] = f"Calculation: {calculation}. {result['reasoning']}"
-                elif 'Quote_Analysis:' in line:
-                    quote_analysis = line.split(':', 1)[1].strip()
-                    if quote_analysis:
-                        result['reasoning'] = f"Quote Analysis: {quote_analysis}. {result['reasoning']}"
-            
-            # Keep the highest confidence match
-            if result['matched_criteria'] != 'None' and result['confidence'] > best_match['confidence']:
-                best_match = result
-                best_match['bucket'] = bucket_name
-                
         except Exception as e:
-            logger.error(f"Error in {bucket_name}: {e}")
-            continue
+            logger.error(f"Error analyzing {bucket_name}: {e}")
+            bucket_results[bucket_name] = f"Error in {bucket_name}: {str(e)}"
+        
+        time.sleep(0.5)  # Rate limiting between bucket calls
     
-    return {
-        'matched_criteria': best_match['matched_criteria'],
-        'risk_level': best_match['risk_level'], 
-        'reasoning': best_match['reasoning'],
-        'bucket': best_match.get('bucket', 'None')
-    }
+    return bucket_results
+
+
+def parse_bucket_results_to_classifications(bucket_results: Dict[str, str], all_flags_with_context: List[str]) -> List[Dict[str, str]]:
+    """
+    Parse the bucket analysis results into individual flag classifications
+    """
+    flag_classifications = []
+    
+    # Initialize all flags as Low risk
+    for i, flag_with_context in enumerate(all_flags_with_context, 1):
+        flag_description = flag_with_context.split('\n')[0]
+        flag_description = re.sub(r'^\d+\.\s+', '', flag_description).strip()
+        
+        flag_classifications.append({
+            'flag': flag_description,
+            'flag_with_context': flag_with_context,
+            'matched_criteria': 'None',
+            'risk_level': 'Low',
+            'reasoning': 'No matching criteria found across all buckets',
+            'bucket': 'None'
+        })
+    
+    # Parse bucket results to update classifications
+    for bucket_name, bucket_response in bucket_results.items():
+        if isinstance(bucket_response, str) and "No flags match" not in bucket_response and "Error" not in bucket_response:
+            lines = bucket_response.strip().split('\n')
+            current_flag_index = None
+            current_flag_data = {}
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('FLAG_'):
+                    # Save previous flag data if exists
+                    if current_flag_index is not None and current_flag_data:
+                        try:
+                            idx = current_flag_index - 1  # Convert to 0-based index
+                            if 0 <= idx < len(flag_classifications):
+                                # Only update if this is higher risk or higher confidence
+                                current_risk = current_flag_data.get('risk_level', 'Low')
+                                current_confidence = current_flag_data.get('confidence', 0)
+                                existing_risk = flag_classifications[idx]['risk_level']
+                                
+                                if (current_risk == 'High' and existing_risk == 'Low') or \
+                                   (current_risk == existing_risk and current_confidence > 5):
+                                    flag_classifications[idx].update({
+                                        'matched_criteria': current_flag_data.get('matched_criteria', 'None'),
+                                        'risk_level': current_risk,
+                                        'reasoning': current_flag_data.get('reasoning', 'Bucket analysis'),
+                                        'bucket': bucket_name
+                                    })
+                        except:
+                            pass
+                    
+                    # Start new flag
+                    try:
+                        current_flag_index = int(line.split('_')[1].split(':')[0])
+                        current_flag_data = {}
+                    except:
+                        current_flag_index = None
+                        
+                elif current_flag_index and ':' in line:
+                    key_value = line.split(':', 1)
+                    if len(key_value) == 2:
+                        key = key_value[0].strip().lower().replace(' ', '_')
+                        value = key_value[1].strip()
+                        
+                        if key == 'matched_criteria':
+                            current_flag_data['matched_criteria'] = value
+                        elif key == 'risk_level':
+                            current_flag_data['risk_level'] = value
+                        elif key == 'confidence':
+                            try:
+                                current_flag_data['confidence'] = int(''.join(filter(str.isdigit, value)))
+                            except:
+                                current_flag_data['confidence'] = 5
+                        elif key in ['reasoning', 'quote_evidence', 'extracted_data', 'calculation']:
+                            if 'reasoning' not in current_flag_data:
+                                current_flag_data['reasoning'] = value
+                            else:
+                                current_flag_data['reasoning'] += f" {value}"
+            
+            # Don't forget the last flag
+            if current_flag_index is not None and current_flag_data:
+                try:
+                    idx = current_flag_index - 1
+                    if 0 <= idx < len(flag_classifications):
+                        current_risk = current_flag_data.get('risk_level', 'Low')
+                        current_confidence = current_flag_data.get('confidence', 0)
+                        existing_risk = flag_classifications[idx]['risk_level']
+                        
+                        if (current_risk == 'High' and existing_risk == 'Low') or \
+                           (current_risk == existing_risk and current_confidence > 5):
+                            flag_classifications[idx].update({
+                                'matched_criteria': current_flag_data.get('matched_criteria', 'None'),
+                                'risk_level': current_risk,
+                                'reasoning': current_flag_data.get('reasoning', 'Bucket analysis'),
+                                'bucket': bucket_name
+                            })
+                except:
+                    pass
+    
+    return flag_classifications
 
 
 def extract_flags_with_complete_context(second_response: str) -> List[str]:
@@ -388,8 +462,8 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt)
         
-        # ITERATION 5: ENHANCED Classification with Complete Context
-        print("Running 5th iteration - Enhanced Classification with Original Context...")
+        # ITERATION 5: EFFICIENT Bucket-Based Classification (6 LLM calls total)
+        print("Running 5th iteration - Efficient Bucket-Based Classification...")
         
         # Step 1: Extract flags WITH complete context (quotes + page references)
         try:
@@ -404,42 +478,34 @@ Provide factual category summaries:"""
             logger.error(f"Error parsing flags with context: {e}")
             flags_with_context = ["Error in flag parsing"]
 
-        # Step 2: Classify each flag using enhanced approach with complete context
+        # Step 2: Efficient classification using 6 total LLM calls for all flags
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
 
         if len(flags_with_context) > 0 and flags_with_context[0] != "Error in flag parsing":
-            for i, flag_with_context in enumerate(flags_with_context, 1):
-                try:
-                    print(f"Classifying flag {i} with original context...")
-                    
-                    # Use enhanced classification with complete context
-                    classification = classify_flag_with_focused_buckets_enhanced(flag_with_context, previous_year_data, llm)
-                    
-                    # Extract just the flag description for results (without quotes)
-                    flag_description = flag_with_context.split('\n')[0]
-                    flag_description = re.sub(r'^\d+\.\s+', '', flag_description).strip()
-                    
-                    classification_results.append({
-                        'flag': flag_description,
-                        'flag_with_context': flag_with_context,
-                        'matched_criteria': classification['matched_criteria'],
-                        'risk_level': classification['risk_level'],
-                        'reasoning': classification['reasoning'],
-                        'bucket': classification.get('bucket', 'None')
-                    })
-                    
-                    # Add to appropriate risk category
-                    if (classification['risk_level'].lower() == 'high' and 
-                        classification['matched_criteria'] != 'None'):
-                        high_risk_flags.append(flag_description)
+            try:
+                print(f"Analyzing all {len(flags_with_context)} flags using 6 bucket calls...")
+                
+                # Use efficient bucket analysis - 6 LLM calls total
+                bucket_results = classify_all_flags_with_buckets(flags_with_context, previous_year_data, llm)
+                
+                # Parse bucket results into individual flag classifications
+                classification_results = parse_bucket_results_to_classifications(bucket_results, flags_with_context)
+                
+                # Separate into high and low risk categories
+                for result in classification_results:
+                    if (result['risk_level'].lower() == 'high' and 
+                        result['matched_criteria'] != 'None'):
+                        high_risk_flags.append(result['flag'])
                     else:
-                        low_risk_flags.append(flag_description)
+                        low_risk_flags.append(result['flag'])
                         
-                except Exception as e:
-                    logger.error(f"Error classifying flag {i}: {e}")
-                    flag_description = flag_with_context.split('\n')[0] if flag_with_context else "Unknown flag"
+            except Exception as e:
+                logger.error(f"Error in efficient bucket classification: {e}")
+                # Fallback: mark all as low risk
+                for flag_with_context in flags_with_context:
+                    flag_description = flag_with_context.split('\n')[0]
                     flag_description = re.sub(r'^\d+\.\s+', '', flag_description).strip()
                     
                     classification_results.append({
@@ -451,8 +517,6 @@ Provide factual category summaries:"""
                         'bucket': 'Error'
                     })
                     low_risk_flags.append(flag_description)
-                  
-                time.sleep(0.3)  # Rate limiting
 
         risk_counts = {
             'High': len(high_risk_flags),
@@ -460,10 +524,11 @@ Provide factual category summaries:"""
             'Total': len(flags_with_context) if flags_with_context and flags_with_context[0] != "Error in flag parsing" else 0
         }
         
-        print(f"\n=== ENHANCED CLASSIFICATION RESULTS WITH ORIGINAL CONTEXT ===")
+        print(f"\n=== EFFICIENT CLASSIFICATION RESULTS (6 LLM calls total) ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
+        print(f"LLM Calls Used: 6 (one per bucket for all flags)")
         
         if high_risk_flags:
             print(f"\n--- HIGH RISK FLAGS (classified using original quotes) ---")
@@ -471,7 +536,7 @@ Provide factual category summaries:"""
                 print(f"  {i}. {flag}")
         else:
             print(f"\n--- HIGH RISK FLAGS ---")
-            print("  No high risk flags identified using original context analysis")
+            print("  No high risk flags identified using efficient bucket analysis")
         
         # Rest of the processing (Word document creation, etc.) remains the same...
         print("\nCreating Word document...")
@@ -533,7 +598,8 @@ Provide factual category summaries:"""
             classification_file = os.path.join(output_folder, f"{pdf_name}_enhanced_context_classification.csv")
             classification_df.to_csv(classification_file, index=False)
 
-        print(f"\n=== ENHANCED CONTEXT-BASED PROCESSING COMPLETE FOR {pdf_name} ===")
+        print(f"\n=== EFFICIENT CONTEXT-BASED PROCESSING COMPLETE FOR {pdf_name} ===")
+        print(f"Total LLM calls in 5th iteration: 6 (bucket-based analysis)")
         return results_summary
        
     except Exception as e:
