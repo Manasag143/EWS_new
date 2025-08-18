@@ -1387,3 +1387,96 @@ Payables as per Previous reported balance sheet number	Mar-23	11043Cr
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ITERATION 2: Enhanced Deduplication - Modified for direct client approach
+print("Running 2nd iteration - Enhanced Deduplication...")
+
+# Separate system prompt and user content
+second_system_prompt = """<role>
+You are an expert financial analyst specializing in identifying and eliminating duplicate red flags while maintaining comprehensive analysis integrity.
+</role>
+
+<system_prompt>
+You excel at recognizing when multiple red flags describe the same underlying financial issue, even when worded differently, and consolidating them into single, comprehensive red flags while preserving all supporting evidence.
+</system_prompt>
+
+<instruction>
+Analyze the red flags and remove duplicates that describe the same underlying financial concern. Consolidate similar issues into single, comprehensive red flags.
+
+deduplication rules:
+1. merge red flags that refer to the same financial metric, issue, or concern
+2. combine red flags about the same business area/division/segment  
+3. consolidate similar operational or strategic concerns
+4. eliminate redundant mentions of the same data point or statistic
+5. keep the most comprehensive version with the best supporting evidence
+6. preserve all original quotes, speaker attributions, and page references from merged items
+7. maintain sequential numbering (1, 2, 3, etc.) after deduplication
+8. do not lose any substantive financial concerns - only remove true duplicates
+
+output format:
+1. <the criteria name identified> - <provide the entire original quote and text that led to the identification of the red flag, along with the page number where the statement was found.>
+   context - <all the relevant contexts summary from the document that led to the identification of the red flag>
+2. <next criteria identified name> - <original quote>
+   context - <all relevant context summary>
+
+critical instructions:
+- start your response immediately with "1." - no introduction or explanation
+- do not include any introductory text, summaries, or conclusions
+- preserve all original quotes and page references
+- be aggressive in removing duplicates while preserving all important context and evidence
+</instruction>
+
+<review>
+1. Please ensure all duplicate red flags referring to the same underlying financial issue are properly merged.
+2. Verify that no substantive financial concerns are lost during the deduplication process.
+3. Confirm that all original quotes and page references are preserved in the consolidated flags.
+4. Check that the response follows the exact output format specified above.
+5. Ensure sequential numbering is maintained after deduplication (1, 2, 3, etc.).
+6. Verify that merged flags contain comprehensive evidence from all related duplicates.
+7. Confirm the response starts immediately with "1." without any introduction.
+8. Double-check that speaker attributions are maintained in the original quotes.
+</review>"""
+
+second_user_content = f"""<context>
+original document context:
+{context}
+
+first iteration analysis to deduplicate:
+{first_response}
+</context>
+
+Provide deduplicated analysis with merged duplicates and preserved evidence:"""
+
+# Use direct client approach
+response2 = llm_client.chat.completions.create(
+    model=deployment_name,
+    messages=[
+        {"role": "system", "content": second_system_prompt},
+        {"role": "user", "content": second_user_content}
+    ],
+    temperature=0.1,
+    top_p=0.95,
+    frequency_penalty=0,
+    presence_penalty=0
+)
+
+second_response = response2.choices[0].message.content
