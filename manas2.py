@@ -1537,3 +1537,230 @@ Short term borrowings as per the previous reported balance sheet number	3317Cr
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+def generate_strict_high_risk_summary(classification_results: List[Dict[str, str]], previous_year_data: str, llm: AzureOpenAILLM) -> List[str]:
+    """Generate VERY concise 1-2 line summaries for high risk flags using flag context and bucket data"""
+    
+    # Filter only high risk flags
+    high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
+    
+    if not high_risk_classifications:
+        return []
+    
+    # Create data buckets for bucket-specific financial metrics
+    data_buckets = create_previous_data_buckets(previous_year_data)
+    bucket_name_to_index = {
+        "Core Debt & Leverage": 0,
+        "Profitability & Performance": 1, 
+        "Margins & Operational Efficiency": 2,
+        "Working Capital & Asset Management": 3,
+        "Asset Quality & Governance": 4,
+        "Market & Operational Risks": 5
+    }
+    
+    # Deduplicate the high_risk_classifications
+    unique_high_risk_classifications = []
+    seen_flag_keywords = []
+    
+    for classification in high_risk_classifications:
+        flag_text = classification.get('flag', '')
+        normalized_flag = re.sub(r'[^\w\s]', '', flag_text.lower()).strip()
+        flag_words = set(normalized_flag.split())
+        
+        # Check for keyword overlap with existing flags
+        is_duplicate_flag = False
+        for existing_keywords in seen_flag_keywords:
+            overlap = len(flag_words.intersection(existing_keywords)) / max(len(flag_words), len(existing_keywords))
+            if overlap > 0.7:  # High threshold for flag deduplication
+                is_duplicate_flag = True
+                break
+        
+        if not is_duplicate_flag:
+            unique_high_risk_classifications.append(classification)
+            seen_flag_keywords.append(flag_words)
+    
+    concise_summaries = []
+    seen_summary_keywords = []
+    
+    for classification in unique_high_risk_classifications:
+        flag_with_context = classification.get('flag_with_context', classification.get('flag', ''))
+        matched_criteria = classification.get('matched_criteria', 'Unknown criteria')
+        bucket_name = classification.get('bucket', 'Unknown bucket')
+        reasoning = classification.get('reasoning', 'No reasoning provided')
+        
+        # Get bucket-specific financial data
+        bucket_index = bucket_name_to_index.get(bucket_name, 0)
+        bucket_specific_data = data_buckets[bucket_index] if bucket_index < len(data_buckets) else ""
+        
+        # If no bucket-specific data, fall back to full previous year data
+        financial_data = bucket_specific_data if bucket_specific_data.strip() else previous_year_data
+
+        prompt = f"""<role>
+You are an experienced financial analyst working in ratings company. Your goal is to review the high risk red flag identified for accuracy and generate summary of high-risk financial red flag identified from earnings call transcript.
+Input document is delimited by ####. It will consist of the red flag identified and corresponding details from the earnings call transcript.
+The Criteria which led to high risk identification is delimited by %%%%.
+Financial Metrics of the company from previous quarter is delimited by &&&&.
+</role>
+ 
+<instructions>
+1. Analyze the financials, red flag identified and the contexts, the criteria which led to high risk identification.
+2. Ensure the accuracy of the identification of the red flag to be high risk.
+3. Create a very concise 1-2 line summary for each high-risk flag.
+4. Include exact numbers, percentages, ratios, and dates whenever mentioned which led to identification of high risk flag.
+5. Be factual and direct - no speculation or interpretation.
+6. Ensure subsequent statements are cautious and do not downplay the risk.
+7. Avoid neutral/positive statements that contradict the warning.
+8. If applicable, specify whether the flag is for: specific business unit/division, consolidated financials, standalone financials, or geographical region. Maintain professional financial terminology.
+</instructions>
+ 
+<context>
+Input document:-
+####
+{flag_with_context}
+####
+ 
+Criteria for Risk identification:
+%%%%
+Criteria Name: {matched_criteria}
+Risk Classification Reasoning: {reasoning}
+Bucket Category: {bucket_name}
+%%%%
+ 
+Financial Metrics of the company from previous quarter:-
+&&&&
+{financial_data}
+&&&&
+ 
+</context>
+ 
+<output_format>
+high_risk_flag: yes if it is actually high risk after review, no otherwise.
+high_risk_flag_summary: [if high risk, provide factual summary]
+</output_format>
+ 
+<review>
+1. Ensure summary is exactly 1-2 lines and preserves all quantitative information
+2. Confirm that all summaries are based solely on information from the input document context
+3. Check that each summary maintains a cautious tone without downplaying risks
+4. Ensure proper business unit/division specification where applicable
+5. Verify that the summary uses professional financial terminology
+6. Check that no speculative or interpretive language is used
+7. Ensure all relevant exact numbers, percentages and dates from the context are preserved
+8. Verify that the output follows the output format specified above
+</review>"""
+        
+        try:
+            response = llm._call(prompt, temperature=0.1)
+            
+            # Parse the response to extract high_risk_flag and summary
+            lines = response.strip().split('\n')
+            high_risk_flag = None
+            high_risk_summary = None
+            
+            for line in lines:
+                line = line.strip()
+                if line.lower().startswith('high_risk_flag:'):
+                    high_risk_value = line.split(':', 1)[1].strip().lower()
+                    high_risk_flag = 'yes' in high_risk_value
+                elif line.lower().startswith('high_risk_flag_summary:'):
+                    high_risk_summary = line.split(':', 1)[1].strip()
+                    # Clean up summary
+                    high_risk_summary = re.sub(r'^\[|\]$', '', high_risk_summary).strip()
+            
+            # Only include if confirmed as high risk and has summary
+            if high_risk_flag and high_risk_summary:
+                # Clean response - remove any prefixes or labels
+                clean_response = high_risk_summary.strip()
+                
+                # Remove common prefixes that might appear
+                prefixes_to_remove = ["Summary:", "The summary:", "Based on", "According to", "Analysis:", "Flag summary:", "The flag:", "This flag:"]
+                for prefix in prefixes_to_remove:
+                    if clean_response.startswith(prefix):
+                        clean_response = clean_response[len(prefix):].strip()
+                
+                # Split into lines and take first 2
+                summary_lines = [line.strip() for line in clean_response.split('\n') if line.strip()]
+                
+                if len(summary_lines) > 2:
+                    concise_summary = '. '.join(summary_lines[:2])
+                elif len(summary_lines) == 0:
+                    concise_summary = f"High risk: {matched_criteria}. Requires management attention."
+                else:
+                    concise_summary = '. '.join(summary_lines)
+                
+                # Ensure proper ending
+                if not concise_summary.endswith('.'):
+                    concise_summary += '.'
+                
+                # Check for duplicate content in summaries
+                normalized_summary = re.sub(r'[^\w\s]', '', concise_summary.lower()).strip()
+                summary_words = set(normalized_summary.split())
+                
+                is_duplicate_summary = False
+                for existing_keywords in seen_summary_keywords:
+                    overlap = len(summary_words.intersection(existing_keywords)) / max(len(summary_words), len(existing_keywords))
+                    if overlap > 0.8:  # Very high threshold for summary deduplication
+                        is_duplicate_summary = True
+                        break
+                
+                if not is_duplicate_summary:
+                    concise_summaries.append(concise_summary)
+                    seen_summary_keywords.append(summary_words)
+            
+        except Exception as e:
+            logger.error(f"Error generating summary for flag '{classification.get('flag', 'Unknown')}': {e}")
+            # Fallback summary
+            fallback_summary = f"High risk identified: {matched_criteria}. Review required based on analysis."
+            concise_summaries.append(fallback_summary)
+    
+    return concise_summaries
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# In the main processing pipeline, replace the word document creation section with:
+
+# Word Document Creation
+print("\nCreating Word document...")
+try:
+    company_info = extract_company_info_from_pdf(pdf_path, llm)
+    summary_by_categories = parse_summary_by_categories(fourth_response)
+   
+    word_doc_path = create_word_document(
+        pdf_name=pdf_name,
+        company_info=company_info,
+        risk_counts=risk_counts,
+        classification_results=classification_results,  # Pass full classification results instead of just high_risk_flags
+        summary_by_categories=summary_by_categories,
+        output_folder=output_folder,
+        previous_year_data=previous_year_data,  # Pass previous_year_data instead of context
+        llm=llm
+    )
+    
+    if word_doc_path:
+        print(f"Word document created: {word_doc_path}")
+    else:
+        print("Failed to create Word document")
+        
+except Exception as e:
+    logger.error(f"Error creating Word document: {e}")
+    word_doc_path = None
