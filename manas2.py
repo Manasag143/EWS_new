@@ -1764,3 +1764,152 @@ try:
 except Exception as e:
     logger.error(f"Error creating Word document: {e}")
     word_doc_path = None
+
+
+
+
+
+
+
+
+
+
+
+def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
+                        classification_results: List[Dict[str, str]], summary_by_categories: Dict[str, List[str]], 
+                        output_folder: str, previous_year_data: str, llm: AzureOpenAILLM) -> str:
+    """Create a formatted Word document with concise high risk summaries"""
+   
+    try:
+        doc = Document()
+       
+        # Document title
+        title = doc.add_heading(company_info, 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+       
+        # Flag Distribution section
+        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+        flag_dist_heading.runs[0].bold = True
+       
+        # Create flag distribution table
+        table = doc.add_table(rows=3, cols=2)
+        table.style = 'Table Grid'
+       
+        high_count = risk_counts.get('High', 0)
+        low_count = risk_counts.get('Low', 0)
+        total_count = high_count + low_count
+       
+        # Safely set table cells
+        if len(table.rows) >= 3 and len(table.columns) >= 2:
+            table.cell(0, 0).text = 'High Risk'
+            table.cell(0, 1).text = str(high_count)
+            table.cell(1, 0).text = 'Low Risk'
+            table.cell(1, 1).text = str(low_count)
+            table.cell(2, 0).text = 'Total Flags'
+            table.cell(2, 1).text = str(total_count)
+           
+            # Make headers bold
+            for i in range(3):
+                if len(table.cell(i, 0).paragraphs) > 0 and len(table.cell(i, 0).paragraphs[0].runs) > 0:
+                    table.cell(i, 0).paragraphs[0].runs[0].bold = True
+       
+        doc.add_paragraph('')
+       
+        # High Risk Flags section with concise summaries
+        high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
+        if high_risk_classifications and len(high_risk_classifications) > 0:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
+           
+            # Generate concise summaries for high risk flags using classification results
+            concise_summaries = generate_strict_high_risk_summary(classification_results, previous_year_data, llm)
+            
+            # Final deduplication check at Word document level
+            final_unique_summaries = []
+            seen_content = set()
+            
+            for summary in concise_summaries:
+                if not summary or not summary.strip():
+                    continue
+                    
+                # Create multiple normalized versions for comparison
+                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
+                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
+                
+                # Check if this content is substantially different
+                is_unique = True
+                for seen in seen_content:
+                    # Calculate similarity
+                    words1 = set(normalized2.split())
+                    words2 = set(seen.split())
+                    if len(words1) == 0 or len(words2) == 0:
+                        continue
+                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
+                    if similarity > 0.6:  # If more than 60% similar, consider duplicate
+                        is_unique = False
+                        break
+                
+                if is_unique:
+                    final_unique_summaries.append(summary)
+                    seen_content.add(normalized2)
+            
+            for summary in final_unique_summaries:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(summary)
+        else:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
+            doc.add_paragraph('No high risk flags identified.')
+       
+        # Horizontal line
+        doc.add_paragraph('_' * 50)
+       
+        # Summary section (4th iteration results)
+        summary_heading = doc.add_heading('Summary', level=1)
+        if len(summary_heading.runs) > 0:
+            summary_heading.runs[0].bold = True
+       
+        # Add categorized summary
+        if summary_by_categories and len(summary_by_categories) > 0:
+            for category, bullets in summary_by_categories.items():
+                if bullets and len(bullets) > 0:
+                    cat_heading = doc.add_heading(str(category), level=2)
+                    if len(cat_heading.runs) > 0:
+                        cat_heading.runs[0].bold = True
+                   
+                    for bullet in bullets:
+                        p = doc.add_paragraph()
+                        p.style = 'List Bullet'
+                        p.add_run(str(bullet))
+                   
+                    doc.add_paragraph('')
+        else:
+            doc.add_paragraph('No categorized summary available.')
+       
+        # Save document
+        doc_filename = f"{pdf_name}_Report.docx"
+        doc_path = os.path.join(output_folder, doc_filename)
+        doc.save(doc_path)
+       
+        return doc_path
+        
+    except Exception as e:
+        logger.error(f"Error creating Word document: {e}")
+        # Create minimal document as fallback
+        try:
+            doc = Document()
+            doc.add_heading(f"{pdf_name} - Analysis Report", 0)
+            doc.add_paragraph(f"High Risk Flags: {risk_counts.get('High', 0)}")
+            doc.add_paragraph(f"Low Risk Flags: {risk_counts.get('Low', 0)}")
+            doc.add_paragraph(f"Total Flags: {risk_counts.get('Total', 0)}")
+            
+            doc_filename = f"{pdf_name}_Report_Fallback.docx"
+            doc_path = os.path.join(output_folder, doc_filename)
+            doc.save(doc_path)
+            return doc_path
+        except Exception as e2:
+            logger.error(f"Error creating fallback document: {e2}")
+            return None
