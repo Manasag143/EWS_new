@@ -1425,7 +1425,7 @@ Provide factual category summaries:"""
 
 def main(): 
     API_CONFIG = {
-        "api_key": "8496bd1da40242a29de18fe1361e498c",
+        "api_key": "849698c",
         "azure_endpoint": "https://crisil-pp-gpt.openai.azure.com",
         "api_version": "2025-01-01-preview",
         "deployment_name": "gpt-4.1"
