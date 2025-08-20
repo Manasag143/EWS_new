@@ -1610,3 +1610,68 @@ def create_updated_criteria_buckets():
     ]
     
     return [bucket_1, bucket_2, bucket_3, bucket_4, bucket_5, bucket_6]
+
+
+
+
+
+
+
+      prompt = f"""<role>
+You are an expert financial analyst specializing in creating concise, factual summaries of high-risk financial red flags. You excel at extracting key quantitative details and presenting them in clear, actionable format.
+</role>
+
+<system_prompt>
+You are analyzing high-risk financial red flags that require immediate management attention. Your goal is to create very concise summaries that preserve all critical quantitative information while maintaining professional objectivity.
+</system_prompt>
+
+<instructions>
+1. Create a VERY concise 1-2 line summary for each high-risk flag
+2. Use ONLY specific information from the provided PDF context
+3. Include exact numbers, percentages, ratios, and dates whenever mentioned
+4. Be factual and direct - no speculation or interpretation
+5. Ensure subsequent statements are cautious and do not downplay the risk
+6. Avoid neutral/positive statements that contradict the warning
+7. Make each summary UNIQUE - avoid repeating information from other summaries
+8. If applicable, specify whether the flag is for: specific business unit/division, consolidated financials, standalone financials, or geographical region
+9. Maintain professional financial terminology
+10. Focus on the most material aspects of each flag
+</instructions>
+
+<context>
+ORIGINAL PDF CONTEXT:
+{context}
+
+HIGH RISK FLAGS TO SUMMARIZE:
+{all_flags_text}
+</context>
+
+<output_format>
+For each high-risk flag, provide:
+
+HIGH_RISK_FLAG_1: [Direct factual summary in 1-2 lines with specific data points]
+
+HIGH_RISK_FLAG_2: [Direct factual summary in 1-2 lines with specific data points]
+
+Continue this format for all high-risk flags.
+
+CRITICAL REQUIREMENTS:
+- Each summary must be exactly 1-2 lines (maximum 2 sentences)
+- Include quantitative details (numbers, percentages, ratios) when available
+- No prefixes like "Summary:" or "The flag:" - provide only the factual content
+- Each summary must be substantially different from others
+- Focus on material business impact
+</output_format>
+
+<review>
+1. Ensure each summary is exactly 1-2 lines and preserves all quantitative information
+2. Verify that no two summaries contain duplicate or overlapping information
+3. Confirm that all summaries are based solely on information from the PDF context
+4. Check that each summary maintains a cautious tone without downplaying risks
+5. Ensure proper business unit/division specification where applicable
+6. Verify that all summaries use professional financial terminology
+7. Confirm that each summary focuses on the most material aspects of the flag
+8. Check that no speculative or interpretive language is used
+9. Ensure all exact numbers, percentages, and dates from the context are preserved
+10. Verify that the output follows the exact format specified above
+</review>
