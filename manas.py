@@ -1498,53 +1498,115 @@ if __name__ == "__main__":
 
 
 
+def create_updated_criteria_buckets():
+    """Organize new 25 criteria into 6 buckets for better LLM classification"""
+    
+    # Bucket 1: Core Debt & Leverage (4 criteria)
+    bucket_1 = [    
+        """debt_increase: 
+            High: Debt is increased more than 30% compared to previous reported balance sheet number; 
+            Low: Debt increased less than 30% compared to previous reported balance sheet number""",
+        """debt_ebitda: 
+            High: Debt/EBITDA > 3x i.e. Debt to EBITDA ratio is above (greater than) three times; 
+            Low: Debt/EBITDA < 3x i.e. Debt to EBITDA ratio is less than three times""",
+        """short_term_borrowings: 
+            High: Short-term borrowings or current liabilities increase by more than 30% compared to previous reported balance sheet number; 
+            Low: Short-term borrowings or current liabilities increase is less than 30% compared to previous reported balance sheet number""",
+        """cash_balance: 
+            High: cash balance falling more than 25% compared to previous reported balance sheet number; 
+            Low: cash balance falling less than 25% compared to previous reported balance sheet number"""
+    ]
 
-"""
-"debt_increase": "High: Debt is increased more than 30% compared to previous reported balance sheet number; Low: Debt increased less than 30% compared to previous reported balance sheet number",
-"debt_ebitda": "High: Debt/EBITDA > 3x i.e. Debt to EBITDA ratio is above (greater than) three times; Low: Debt/EBITDA < 3x i.e. Debt to EBITDA ratio is less than three times",
-"short_term_borrowings": "High: Short-term borrowings or current liabilities increase by more than 30% compared to previous reported balance sheet number; Low: Short-term borrowings or current liabilities increase is less than 30% compared to previous reported balance sheet number",
-"cash_balance": "High: cash balance falling more than 25% compared to previous reported balance sheet number; Low: cash balance falling less than 25% compared to previous reported balance sheet number"
-
-"revenue_decline": "High: revenue falls by more than 25% compared to previous reported quarter number; Low: revenue falls by less than 25% compared to previous reported quarter number",
-"profit_before_tax_decline": "High: profitability or profit before tax (PBT) falls by more than 25% compared to previous reported quarter number; Low: profitability or profit before tax (PBT) falls by less than 25% compared to previous reported quarter number",
-"profit_after_tax_decline": "High: Profit after tax (PAT) falls by more than 25% compared to previous reported quarter number; Low: Profit after tax (PAT) falls by less than 25% compared to previous reported quarter number",
-"EBIDTA_decline": "High: EBITDA falls by more than 25% compared to previous reported quarter number; Low: EBITDA falls by less than 25% compared to previous reported quarter number"
-
-"margin_decline": "High: operating margin falling more than 25% compared to previous reported quarter number; Low: Operating margin falling less than 25% compared to previous reported quarter number",
-"gross_margin": "High: gross margin falling more than 100 bps (basis points) i.e. if the gross margin is falling by more than 1 %; Low: gross margin falling by less than 100 bps (basis points) i.e.1% ",
-"one-time_expenses": "High: one-time expenses or losses more than 25% of current quarter's EBITDA; Low: one-time expenses or losses less than 25% of current quarter's EBITDA",
-"provisioning": "High: provisioning or write-offs more than 25% of current quarter's EBITDA; Low: provisioning or write-offs less than 25% of current quarter's EBITDA"
-
-"receivable_days": "High: receivable days OR debtor days are increased more than 30% compared to previous reported balance sheet number; Low: receivable days or debtor's days are increased but less than 30% compared to previous reported balance sheet number",
-"payable_days": "High: payable days or creditors days increase by more than 30% compared to previous reported balance sheet number; Low: payable days or creditors days increase is less than 30% compared to previous reported balance sheet number",
-"receivables": "High: receivables or debtors are increased more than 30% compared to previous reported balance sheet number; Low: receivables or debtors are increase is less than 30% compared to previous reported balance sheet number",
-"payables": "High: payables or creditors increase by more than 30% compared to previous reported balance sheet number; Low: payables or creditors is less than 30% compared to previous reported balance sheet number"
-
-"asset_decline": "High: Asset value falls by more than 30% compared to the previous reported balance sheet number; Low: Asset value falls by less than 30% compared to previous reported balance sheet number",
-"impairment": "High: Impairment or devaluation more than 25% of previous reported net worth from balance sheet; Low: Impairment or devaluation less than 25% of previous reported net worth from balance sheet",
-"management_issues": "High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy. Low: If found no issues related to management or strategy or no concerns or a conclusion of any discussion related to management and strategy ",
-"regulatory_compliance": "High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators and if there is any mention of delays in obtaining necessary permits, approvals, licenses. Low: if there is a no clear concern for the company basis the discussion on the regulatory issues",
-
-"market_competition": "High: Any signs of competitive intensity, new entrants, pricing pressure (including dumping or price changes), or decline in market share” Low: Low competitive intensity or no new entrants, or no decline in market share",
-"operational_disruptions": "High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues. Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues",
-
-"others_1": "High: If there are any other material issues with quantified impact more than 25% of current quarter EBITDA. Low: If there are no other material issues with quantified impact more than 25% of current quarter EBITDA "
-
-“others_2”: “High: If any metric like revenue growth, profit before tax, profit after tax, working capital, EBIDTA, margins, etc. has a negative value.” 
-“others_3”: “High: If there is a mention of:
-• “Significant decline” in key metrics such as revenue, EBITDA, profit (PAT/PBT), margins, or other metrics, even if the quantum is not provided.
-• Mentions of “high erosion of net worth,” with or without mention of quantum.
-• References to “massive losses,” with or without mention of quantum.
-• Mentions of “huge decline,” with or without a specific value.
-• If there is any net loss.
-• Use of any adjectives that signal significant adversity in the financial situation.
-“others_4”: “High: If there is comparison provided in transcript which is beyond severity logic, and if decline / moderation is more than 7%”
-
-"""
-
-
-
-
-
-
-
+    # Bucket 2: Profitability & Performance (4 criteria)
+    bucket_2 = [
+        """revenue_decline: 
+            High: revenue falls by more than 25% compared to previous reported quarter number; 
+            Low: revenue falls by less than 25% compared to previous reported quarter number""",
+        """profit_before_tax_decline: 
+            High: profitability or profit before tax (PBT) falls by more than 25% compared to previous reported quarter number; 
+            Low: profitability or profit before tax (PBT) falls by less than 25% compared to previous reported quarter number""",
+        """profit_after_tax_decline: 
+            High: Profit after tax (PAT) falls by more than 25% compared to previous reported quarter number; 
+            Low: Profit after tax (PAT) falls by less than 25% compared to previous reported quarter number""",
+        """EBIDTA_decline: 
+            High: EBITDA falls by more than 25% compared to previous reported quarter number; 
+            Low: EBITDA falls by less than 25% compared to previous reported quarter number"""
+    ]
+    
+    # Bucket 3: Margins & Operational Efficiency (4 criteria)
+    bucket_3 = [
+        """margin_decline: 
+            High: operating margin falling more than 25% compared to previous reported quarter number; 
+            Low: Operating margin falling less than 25% compared to previous reported quarter number""",
+        """gross_margin: 
+            High: gross margin falling more than 100 bps (basis points) i.e. if the gross margin is falling by more than 1 %; 
+            Low: gross margin falling by less than 100 bps (basis points) i.e.1%""",
+        """one-time_expenses: 
+            High: one-time expenses or losses more than 25% of current quarter's EBITDA; 
+            Low: one-time expenses or losses less than 25% of current quarter's EBITDA""",
+        """provisioning: 
+            High: provisioning or write-offs more than 25% of current quarter's EBITDA; 
+            Low: provisioning or write-offs less than 25% of current quarter's EBITDA"""
+    ]
+    
+    # Bucket 4: Working Capital & Asset Management (4 criteria)
+    bucket_4 = [
+        """receivable_days: 
+            High: receivable days OR debtor days are increased more than 30% compared to previous reported balance sheet number; 
+            Low: receivable days or debtor's days are increased but less than 30% compared to previous reported balance sheet number""",
+        """payable_days: 
+            High: payable days or creditors days increase by more than 30% compared to previous reported balance sheet number; 
+            Low: payable days or creditors days increase is less than 30% compared to previous reported balance sheet number""",
+        """receivables: 
+            High: receivables or debtors are increased more than 30% compared to previous reported balance sheet number; 
+            Low: receivables or debtors are increase is less than 30% compared to previous reported balance sheet number""",
+        """payables: 
+            High: payables or creditors increase by more than 30% compared to previous reported balance sheet number; 
+            Low: payables or creditors is less than 30% compared to previous reported balance sheet number"""
+    ]
+    
+    # Bucket 5: Asset Quality & Governance (4 criteria) 
+    bucket_5 = [
+        """asset_decline: 
+            High: Asset value falls by more than 30% compared to the previous reported balance sheet number; 
+            Low: Asset value falls by less than 30% compared to previous reported balance sheet number""",
+        """impairment: 
+            High: Impairment or devaluation more than 25% of previous reported net worth from balance sheet; 
+            Low: Impairment or devaluation less than 25% of previous reported net worth from balance sheet""",
+        """management_issues: 
+            High: If found any management or strategy related issues or concerns or a conclusion of any discussion related to management and strategy. 
+            Low: If found no issues related to management or strategy or no concerns or a conclusion of any discussion related to management and strategy""",
+        """regulatory_compliance: 
+            High: if found any regulatory issues as a concern or a conclusion of any discussion related to regulatory issues or warning(s) from the regulators and if there is any mention of delays in obtaining necessary permits, approvals, licenses. 
+            Low: if there is a no clear concern for the company basis the discussion on the regulatory issues"""
+    ]
+    
+    # Bucket 6: Market & Operational Risks (9 criteria - includes all "others")
+    bucket_6 = [
+        """market_competition: 
+            High: Any signs of competitive intensity, new entrants, pricing pressure (including dumping or price changes), or decline in market share. 
+            Low: Low competitive intensity or no new entrants, or no decline in market share""",
+        """operational_disruptions: 
+            High: if found any operational or supply chain issues as a concern or a conclusion of any discussion related to operational issues. 
+            Low: if there is no clear concern for the company basis the discussion on the operational or supply chain issues""",
+        """others_1: 
+            High: If there are any other material issues with quantified impact more than 25% of current quarter EBITDA. 
+            Low: If there are no other material issues with quantified impact more than 25% of current quarter EBITDA""",
+        """others_2: 
+            High: If any metric like revenue growth, profit before tax, profit after tax, working capital, EBIDTA, margins, etc. has a negative value. 
+            Low: If no metrics have negative values""",
+        """others_3: 
+            High: If there is a mention of:
+            • "Significant decline" in key metrics such as revenue, EBITDA, profit (PAT/PBT), margins, or other metrics, even if the quantum is not provided.
+            • Mentions of "high erosion of net worth," with or without mention of quantum.
+            • References to "massive losses," with or without mention of quantum.
+            • Mentions of "huge decline," with or without a specific value.
+            • If there is any net loss.
+            • Use of any adjectives that signal significant adversity in the financial situation.
+            Low: No mentions of significant decline, erosion, massive losses, huge decline, net loss, or adverse adjectives""",
+        """others_4: 
+            High: If there is comparison provided in transcript which is beyond severity logic, and if decline / moderation is more than 7%. 
+            Low: If decline / moderation is 7% or less, or no concerning comparisons are provided"""
+    ]
+    
+    return [bucket_1, bucket_2, bucket_3, bucket_4, bucket_5, bucket_6]
