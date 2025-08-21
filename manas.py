@@ -302,3 +302,64 @@ Reasoning: [brief explanation with evidence from the flag about the qualitative 
             bucket_results[bucket_name] = f"Error in {bucket_name}: {str(e)}"
     
     return bucket_results
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Example 1: Quantitative Criteria
+margin_decline:
+
+High: Operating margin falling more than 25% compared to previous reported quarter number for the company or any business line of the company
+
+High risk sample example 1: "Our operating margin declined from 20% last quarter to 14% this quarter due to increased raw material costs"
+High risk sample example 2: "The textile division's operating margin dropped from 15% to 10%, a 33% decline compared to Q3"
+
+
+Low: Operating margin falling less than 25% compared to previous reported quarter number
+
+Low risk sample 1: "Operating margin decreased from 18% to 16% this quarter, which is within our expected range"
+
+
+
+
+
+
+management_issues:
+
+High: If found any management or strategy related issues or concerns
+
+High risk sample example 1: "Our CEO resigned unexpectedly last month and we are still searching for a replacement"
+High risk sample example 2: "The board is reconsidering our five-year strategy due to disagreements among senior management"
+
+
+Low: If found no issues related to management or strategy
+
+Low risk sample 1: "The management team remains stable and we are confident in our strategic direction for the next three years"
+
+
+
+
+
+criteria :
+    high:defination 
+        high risk sample example1:
+        high risk sample example2:
+    low :defination
+        low risk sample 1:
