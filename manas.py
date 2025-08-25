@@ -1,4 +1,3 @@
-import ast
 import os
 import time
 import pandas as pd
@@ -6,14 +5,11 @@ import fitz
 import warnings
 import hashlib
 import logging
-import json
 from typing import Dict, List, Any
 import glob
 from pathlib import Path
 from docx import Document
-from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.shared import OxmlElement, qn
 import re
 from openai import AzureOpenAI
 import httpx
@@ -71,7 +67,6 @@ class AzureOpenAILLM:
 # ==============================================================================
 # PDF PROCESSING FUNCTIONS
 # ==============================================================================
-
 
 keywords_part1 = """
 Attrition: Refers to the increasing or high loss of employees, customers, or revenue due to various reasons such as resignation, retirement, or competition, which can negatively impact a company's financial performance. 
@@ -229,42 +224,6 @@ Extract company information:"""
     except Exception as e:
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
-
-# ==============================================================================
-# NEW EXCEL READING FUNCTIONS
-# ==============================================================================
-
-def read_prompts_and_keywords_from_excel(queries_csv_path: str):
-    """Read main prompt and split keywords from existing Excel structure"""
-    
-    try:
-        if queries_csv_path.endswith('.xlsx'):
-            queries_df = pd.read_excel(queries_csv_path)
-        else:
-            queries_df = pd.read_csv(queries_csv_path)
-        
-        if len(queries_df) < 3 or "prompt" not in queries_df.columns:
-            # Fallback if structure is not as expected
-            return (
-                "Analyze this document for potential red flags.",
-                "<reference>No keywords part 1 available</reference>",
-                "<reference>No keywords part 2 available</reference>"
-            )
-        
-        # Extract the three rows
-        main_prompt = queries_df["prompt"].tolist()[0]        # Row 1: Main prompt
-        keywords_part_1 = queries_df["prompt"].tolist()[1]    # Row 2: Keywords 1-32
-        keywords_part_2 = queries_df["prompt"].tolist()[2]    # Row 3: Keywords 33-63
-        
-        return main_prompt, keywords_part_1, keywords_part_2
-        
-    except Exception as e:
-        logger.warning(f"Error loading queries file: {e}. Using defaults.")
-        return (
-            "Analyze this document for potential red flags.",
-            "<reference>No keywords part 1 available</reference>", 
-            "<reference>No keywords part 2 available</reference>"
-        )
 
 # ==============================================================================
 # CRITERIA BUCKETS AND CLASSIFICATION FUNCTIONS
@@ -445,7 +404,7 @@ def create_previous_data_buckets(previous_year_data: str):
     
     # Bucket 1: Core Debt & Leverage (Quantitative)
     bucket_1_data = ""
-    for key in ['debt as per previous reported balance sheet number', 'current quarter ebitda', 'ebitda as per previous reported quarter number', 'short term borrowings as per the previous reported balance sheet number','previous quarter net cash accrual(NCA)']:
+    for key in ['debt as per previous reported balance sheet number', 'current quarter ebitda', 'ebitda as per previous reported quarter number', 'short term borrowings as per the previous reported balance sheet number','previous quarter net cash accrual(nca)']:
         if key in data_dict:
             bucket_1_data += data_dict[key] + "\n"
     
@@ -567,7 +526,8 @@ High/Low Risk identification criteria (QUALITATIVE - focus on concerns, issues, 
 3. For each matching flag, determine if it's High or Low risk based on the presence/absence of concerns mentioned in the criteria.
 4. Use the exact flag numbering format: FLAG_1, FLAG_2, etc.
 5. Focus on management issues, regulatory concerns, operational problems, and strategic uncertainties.
-6. If no flags match the criteria in this bucket, respond with "No flags match the criteria in this bucket."
+6. Refer to the sample examples provided in criteria_list to help identify high risk flags accurately.
+7. If no flags match the criteria in this bucket, respond with "No flags match the criteria in this bucket."
 </instructions>
  
 Output format - For each matching flag:
@@ -653,7 +613,7 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
                     elif line.startswith('Matched_Criteria:'):
                         matched_criteria = line.replace('Matched_Criteria:', '').strip()
                         # Clean up criteria name
-                        matched_criteria = re.sub(r'^\[|\]$', '', matched_criteria).strip()
+                        matched_criteria = re.sub(r'^\[|\], '', matched_criteria).strip()
                     elif line.startswith('Risk_Level:'):
                         risk_level_text = line.replace('Risk_Level:', '').strip()
                         # Extract High or Low
@@ -664,7 +624,7 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
                     elif line.startswith('Reasoning:'):
                         reasoning = line.replace('Reasoning:', '').strip()
                         # Clean up reasoning
-                        reasoning = re.sub(r'^\[|\]$', '', reasoning).strip()
+                        reasoning = re.sub(r'^\[|\], '', reasoning).strip()
                 
                 # Update classification if we have all required fields
                 if (flag_number is not None and matched_criteria and 
@@ -697,49 +657,31 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
     
     return flag_classifications
 
-def extract_flags_with_complete_context(second_response: str) -> List[str]:
+def extract_bullets_from_fourth_iteration(fourth_response: str) -> List[str]:
     """
-    Enhanced flag extraction that preserves complete context including original quotes and page references
+    Extract bullet points from 4th iteration summary to use as flags for classification
     """
-    flags_with_context = []
-    lines = second_response.split('\n')
-    current_flag = ""
+    bullets = []
+    lines = fourth_response.split('\n')
+    current_category = ""
     
-    for i, line in enumerate(lines):
+    for line in lines:
         line = line.strip()
         
-        # Check if this is the start of a new flag
-        if re.match(r'^\d+\.\s+', line):
-            # Save previous flag if it exists
-            if current_flag.strip():
-                flags_with_context.append(current_flag.strip())
-            
-            # Start new flag
-            current_flag = line
-            
-            # Look ahead to capture original quotes and page references
-            j = i + 1
-            while j < len(lines) and not re.match(r'^\d+\.\s+', lines[j].strip()):
-                next_line = lines[j].strip()
-                if next_line:  # Only add non-empty lines
-                    current_flag += "\n" + next_line
-                j += 1
+        # Skip category headers (### Category Name)
+        if line.startswith('###'):
+            current_category = line.replace('###', '').strip()
+            continue
         
-    # Don't forget the last flag
-    if current_flag.strip():
-        flags_with_context.append(current_flag.strip())
+        # Extract bullet points (* or - markers)
+        if line.startswith('*') or line.startswith('-'):
+            bullet_text = line[1:].strip()  # Remove the bullet marker
+            if bullet_text and len(bullet_text) > 10:  # Minimum length check
+                # Preserve category context in the bullet
+                full_bullet = f"[{current_category}] {bullet_text}" if current_category else bullet_text
+                bullets.append(full_bullet)
     
-    # Clean and validate flags
-    cleaned_flags = []
-    for flag in flags_with_context:
-        # Remove any prefixes but keep the complete context
-        flag = re.sub(r'^The potential red flag you observed - ', '', flag)
-        flag = flag.strip()
-        
-        if flag and len(flag) > 10:  # Minimum length check
-            cleaned_flags.append(flag)
-    
-    return cleaned_flags
+    return bullets
 
 # ==============================================================================
 # DOCUMENT GENERATION FUNCTIONS
@@ -899,7 +841,7 @@ high_risk_flag_summary: [if high risk, provide factual summary]
                 elif line.lower().startswith('high_risk_flag_summary:'):
                     high_risk_summary = line.split(':', 1)[1].strip()
                     # Clean up summary
-                    high_risk_summary = re.sub(r'^\[|\]$', '', high_risk_summary).strip()
+                    high_risk_summary = re.sub(r'^\[|\], '', high_risk_summary).strip()
             
             # Only include if confirmed as high risk and has summary
             if high_risk_flag and high_risk_summary:
@@ -952,8 +894,8 @@ high_risk_flag_summary: [if high risk, provide factual summary]
 
 def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
                         classification_results: List[Dict[str, str]], summary_by_categories: Dict[str, List[str]], 
-                        output_folder: str, previous_year_data: str, llm: AzureOpenAILLM) -> str:
-    """Create a formatted Word document with concise high risk summaries"""
+                        output_folder: str) -> str:
+    """Create a formatted Word document using 4th iteration summaries directly - SIMPLIFIED VERSION"""
    
     try:
         doc = Document()
@@ -990,49 +932,19 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
        
         doc.add_paragraph('')
        
-        # High Risk Flags section with concise summaries
+        # High Risk Flags section - SIMPLIFIED (use classified flags directly)
         high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
         if high_risk_classifications and len(high_risk_classifications) > 0:
             high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
             if len(high_risk_heading.runs) > 0:
                 high_risk_heading.runs[0].bold = True
            
-            # Generate concise summaries for high risk flags using classification results
-            concise_summaries = generate_strict_high_risk_summary(classification_results, previous_year_data, llm)
-            
-            # Final deduplication check at Word document level
-            final_unique_summaries = []
-            seen_content = set()
-            
-            for summary in concise_summaries:
-                if not summary or not summary.strip():
-                    continue
-                    
-                # Create multiple normalized versions for comparison
-                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
-                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
-                
-                # Check if this content is substantially different
-                is_unique = True
-                for seen in seen_content:
-                    # Calculate similarity
-                    words1 = set(normalized2.split())
-                    words2 = set(seen.split())
-                    if len(words1) == 0 or len(words2) == 0:
-                        continue
-                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
-                    if similarity > 0.6:  # If more than 60% similar, consider duplicate
-                        is_unique = False
-                        break
-                
-                if is_unique:
-                    final_unique_summaries.append(summary)
-                    seen_content.add(normalized2)
-            
-            for summary in final_unique_summaries:
+            # Use the classified high risk flags directly (they're already summaries from 4th iteration)
+            for result in high_risk_classifications:
+                flag_text = result.get('flag', 'Unknown flag')
                 p = doc.add_paragraph()
                 p.style = 'List Bullet'
-                p.add_run(summary)
+                p.add_run(flag_text)
         else:
             high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
             if len(high_risk_heading.runs) > 0:
@@ -1066,6 +978,28 @@ def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str
        
         # Save document
         doc_filename = f"{pdf_name}_Report.docx"
+        doc_path = os.path.join(output_folder, doc_filename)
+        doc.save(doc_path)
+       
+        return doc_path
+        
+    except Exception as e:
+        logger.error(f"Error creating Word document: {e}")
+        # Create minimal document as fallback
+        try:
+            doc = Document()
+            doc.add_heading(f"{pdf_name} - Analysis Report", 0)
+            doc.add_paragraph(f"High Risk Flags: {risk_counts.get('High', 0)}")
+            doc.add_paragraph(f"Low Risk Flags: {risk_counts.get('Low', 0)}")
+            doc.add_paragraph(f"Total Flags: {risk_counts.get('Total', 0)}")
+            
+            doc_filename = f"{pdf_name}_Report_Fallback.docx"
+            doc_path = os.path.join(output_folder, doc_filename)
+            doc.save(doc_path)
+            return doc_path
+        except Exception as e2:
+            logger.error(f"Error creating fallback document: {e2}")
+            return None
         doc_path = os.path.join(output_folder, doc_filename)
         doc.save(doc_path)
        
@@ -1236,12 +1170,12 @@ For each identified negative red flag, strictly adhere to the following output f
 # MAIN PROCESSING PIPELINE WITH SPLIT FIRST ITERATION
 # ==============================================================================
 
-def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, previous_year_data: str, 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Enhanced processing pipeline with split first iteration using existing Excel structure
+    Enhanced processing pipeline with split first iteration - CLEANED VERSION (removed queries_csv_path)
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -1470,30 +1404,31 @@ Provide factual category summaries:"""
         
         fourth_response = llm._call(fourth_prompt)
         
-        # ITERATION 5: Efficient Bucket-Based Classification (UNCHANGED)
-        print("Running 5th iteration - Efficient Bucket-Based Classification...")
+        # ITERATION 5: Efficient Bucket-Based Classification using 4th iteration results
+        print("Running 5th iteration - Classification using 4th iteration summary bullets...")
         
         try:
-            flags_with_context = extract_flags_with_complete_context(second_response)
-            print(f"\nFlags with context extracted: {len(flags_with_context)}")
+            # Extract bullet points from 4th iteration summary
+            summary_bullets = extract_bullets_from_fourth_iteration(fourth_response)
+            print(f"\nSummary bullets extracted: {len(summary_bullets)}")
             
-            if flags_with_context:
-                print(f"Example flag with context:\n{flags_with_context[0][:200]}...")
+            if summary_bullets:
+                print(f"Example summary bullet:\n{summary_bullets[0][:200]}...")
             
         except Exception as e:
-            logger.error(f"Error parsing flags with context: {e}")
-            flags_with_context = ["Error in flag parsing"]
+            logger.error(f"Error parsing summary bullets: {e}")
+            summary_bullets = ["Error in bullet parsing"]
 
         classification_results = []
         high_risk_flags = []
         low_risk_flags = []
 
-        if len(flags_with_context) > 0 and flags_with_context[0] != "Error in flag parsing":
+        if len(summary_bullets) > 0 and summary_bullets[0] != "Error in bullet parsing":
             try:
-                print(f"Analyzing all {len(flags_with_context)} flags using 8 bucket calls.")
+                print(f"Analyzing all {len(summary_bullets)} summary bullets using 8 bucket calls.")
                 
-                bucket_results = classify_all_flags_with_enhanced_buckets(flags_with_context, previous_year_data, llm)
-                classification_results = parse_bucket_results_to_classifications_enhanced(bucket_results, flags_with_context)
+                bucket_results = classify_all_flags_with_enhanced_buckets(summary_bullets, previous_year_data, llm)
+                classification_results = parse_bucket_results_to_classifications_enhanced(bucket_results, summary_bullets)
 
                 for result in classification_results:
                     if (result['risk_level'].lower() == 'high' and 
@@ -1504,38 +1439,39 @@ Provide factual category summaries:"""
                         
             except Exception as e:
                 logger.error(f"Error in efficient bucket classification: {e}")
-                for flag_with_context in flags_with_context:
-                    flag_description = flag_with_context.split('\n')[0]
-                    flag_description = re.sub(r'^\d+\.\s+', '', flag_description).strip()
+                for summary_bullet in summary_bullets:
+                    bullet_description = summary_bullet.strip()
+                    # Remove bullet point markers
+                    bullet_description = re.sub(r'^\*\s*|\-\s*', '', bullet_description).strip()
                     
                     classification_results.append({
-                        'flag': flag_description,
-                        'flag_with_context': flag_with_context,
+                        'flag': bullet_description,
+                        'flag_with_context': summary_bullet,
                         'matched_criteria': 'None',
                         'risk_level': 'Low',
                         'reasoning': f'Classification failed: {str(e)}',
                         'bucket': 'Error'
                     })
-                    low_risk_flags.append(flag_description)
+                    low_risk_flags.append(bullet_description)
 
         risk_counts = {
             'High': len(high_risk_flags),
             'Low': len(low_risk_flags),
-            'Total': len(flags_with_context) if flags_with_context and flags_with_context[0] != "Error in flag parsing" else 0
+            'Total': len(summary_bullets) if summary_bullets and summary_bullets[0] != "Error in bullet parsing" else 0
         }
         
-        print(f"\n=== SPLIT ITERATION CLASSIFICATION RESULTS (2+6 LLM calls total) ===")
+        print(f"\n=== CLASSIFICATION RESULTS USING 4TH ITERATION SUMMARIES ===")
         print(f"High Risk Flags: {risk_counts['High']}")
         print(f"Low Risk Flags: {risk_counts['Low']}")
         print(f"Total Flags: {risk_counts['Total']}")
         
         if high_risk_flags:
-            print(f"\n--- HIGH RISK FLAGS (classified using original quotes) ---")
+            print(f"\n--- HIGH RISK FLAGS (classified from summary bullets) ---")
             for i, flag in enumerate(high_risk_flags, 1):
                 print(f"  {i}. {flag}")
         else:
             print(f"\n--- HIGH RISK FLAGS ---")
-            print("  No high risk flags identified using efficient bucket analysis")
+            print("  No high risk flags identified from summary bullets")
         
         # Word Document Creation
         print("\nCreating Word document...")
@@ -1549,9 +1485,7 @@ Provide factual category summaries:"""
                 risk_counts=risk_counts,
                 classification_results=classification_results,  
                 summary_by_categories=summary_by_categories,
-                output_folder=output_folder,
-                previous_year_data=previous_year_data,  # Pass previous_year_data instead of context
-                llm=llm
+                output_folder=output_folder
             )
             
             if word_doc_path:
@@ -1574,27 +1508,27 @@ Provide factual category summaries:"""
                 "Enhanced Deduplication",
                 "Categorization",
                 "Summary Generation", 
-                "Enhanced Context-Based Classification"
+                "4th Iteration Summary Classification"
             ],
             "response": [
                 first_response,
                 second_response,
                 third_response,
                 fourth_response,
-                f"Enhanced Context-Based Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total flags"
+                f"4th Iteration Classification: {risk_counts['High']} High Risk, {risk_counts['Low']} Low Risk flags from {risk_counts['Total']} total summary bullets"
             ],
             "timestamp": [timestamp] * 5
         })
        
-        results_file = os.path.join(output_folder, f"{pdf_name}_split_iteration_pipeline_results.csv")
+        results_file = os.path.join(output_folder, f"{pdf_name}_4th_iteration_pipeline_results.csv")
         results_summary.to_csv(results_file, index=False)
         
         if len(classification_results) > 0:
             classification_df = pd.DataFrame(classification_results)
-            classification_file = os.path.join(output_folder, f"{pdf_name}_split_iteration_classification.csv")
+            classification_file = os.path.join(output_folder, f"{pdf_name}_4th_iteration_classification.csv")
             classification_df.to_csv(classification_file, index=False)
 
-        print(f"\n=== SPLIT ITERATION PROCESSING COMPLETE FOR {pdf_name} ===")
+        print(f"\n=== 4TH ITERATION PROCESSING COMPLETE FOR {pdf_name} ===")
         return results_summary
        
     except Exception as e:
@@ -1607,7 +1541,7 @@ Provide factual category summaries:"""
 
 def main(): 
     API_CONFIG = {
-        "api_key": "84998c",
+        "api_key": "8498c",
         "azure_endpoint": "https://crisil-pp-gpt.openai.azure.com",
         "api_version": "2025-01-01-preview",
         "deployment_name": "gpt-4.1"
@@ -1615,8 +1549,7 @@ def main():
     
     PATHS_CONFIG = {
         "pdf_folder_path": r"sterlin_dec_2022",
-        "queries_csv_path": r"EWS_prompts_v2_2.xlsx",
-        "output_folder": r"sterlin_dec_results_split_iteration_4"
+        "output_folder": r"sterlin_dec_results_split_iteration_5"
     }
     
     PREVIOUS_YEAR_DATA = """
@@ -1624,19 +1557,19 @@ Debt as per Previous reported balance sheet number	446Cr
 Current quarter ebidta	-60Cr
 Asset value as per previous reported balance sheet number	3500Cr
 Receivable days as per previous reported balance sheet number	55days
-Payable days as per Previous reported balance sheet number	-	days
+Payable days as per Previous reported balance sheet number	-days
 Revenue as per previous reported quarter number	313Cr
 profit before tax as per previous reported quarter number	-308Cr
 profit after tax as per previous reported quarter number	-299Cr
 EBIDTA as per previous reported quarter number	-370Cr
-Operating margin as per previous quarter number	-118%	
+Operating margin as per previous quarter number	-118%
 Cash balance as per previous reported balance sheet number	504Cr
 Short term borrowings as per the previous reported balance sheet number	435Cr
 previous reported net worth from balance sheet	898.52Cr
 Receivables as per previous reported balance sheet number	783.95Cr
 Payables as per Previous reported balance sheet number	1402.86Cr
 """
-   
+
     os.makedirs(PATHS_CONFIG["output_folder"], exist_ok=True)
     
     # Process all PDFs in folder
@@ -1652,10 +1585,9 @@ Payables as per Previous reported balance sheet number	1402.86Cr
         
         start_time = time.time()
         
-        # Use the new split iteration function
+        # Use the 4th iteration classification function
         result = process_pdf_enhanced_pipeline_with_split_iteration(
             pdf_path=pdf_file,
-            queries_csv_path=PATHS_CONFIG["queries_csv_path"],
             previous_year_data=PREVIOUS_YEAR_DATA,
             output_folder=PATHS_CONFIG["output_folder"],
             api_key=API_CONFIG["api_key"],
