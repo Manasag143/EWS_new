@@ -68,7 +68,6 @@ class AzureOpenAILLM:
 # PDF PROCESSING FUNCTIONS
 # ==============================================================================
 
-
 keywords_part1 = """
 Attrition: Refers to the increasing or high loss of employees, customers, or revenue due to various reasons such as resignation, retirement, or competition, which can negatively impact a company's financial performance. 
 Adverse: Describes an unfavorable or negative situation, event, or trend, such as adverse market conditions or regulatory changes. 
@@ -225,42 +224,6 @@ Extract company information:"""
     except Exception as e:
         logger.error(f"Error extracting company info: {e}")
         return "Unknown Company-Q1FY25"
-
-# ==============================================================================
-# NEW EXCEL READING FUNCTIONS
-# ==============================================================================
-
-def read_prompts_and_keywords_from_excel(queries_csv_path: str):
-    """Read main prompt and split keywords from existing Excel structure"""
-    
-    try:
-        if queries_csv_path.endswith('.xlsx'):
-            queries_df = pd.read_excel(queries_csv_path)
-        else:
-            queries_df = pd.read_csv(queries_csv_path)
-        
-        if len(queries_df) < 3 or "prompt" not in queries_df.columns:
-            # Fallback if structure is not as expected
-            return (
-                "Analyze this document for potential red flags.",
-                "<reference>No keywords part 1 available</reference>",
-                "<reference>No keywords part 2 available</reference>"
-            )
-        
-        # Extract the three rows
-        main_prompt = queries_df["prompt"].tolist()[0]        # Row 1: Main prompt
-        keywords_part_1 = queries_df["prompt"].tolist()[1]    # Row 2: Keywords 1-32
-        keywords_part_2 = queries_df["prompt"].tolist()[2]    # Row 3: Keywords 33-63
-        
-        return main_prompt, keywords_part_1, keywords_part_2
-        
-    except Exception as e:
-        logger.warning(f"Error loading queries file: {e}. Using defaults.")
-        return (
-            "Analyze this document for potential red flags.",
-            "<reference>No keywords part 1 available</reference>", 
-            "<reference>No keywords part 2 available</reference>"
-        )
 
 # ==============================================================================
 # CRITERIA BUCKETS AND CLASSIFICATION FUNCTIONS
@@ -441,7 +404,7 @@ def create_previous_data_buckets(previous_year_data: str):
     
     # Bucket 1: Core Debt & Leverage (Quantitative)
     bucket_1_data = ""
-    for key in ['debt as per previous reported balance sheet number', 'current quarter ebitda', 'ebitda as per previous reported quarter number', 'short term borrowings as per the previous reported balance sheet number','previous quarter net cash accrual(NCA)']:
+    for key in ['debt as per previous reported balance sheet number', 'current quarter ebitda', 'ebitda as per previous reported quarter number', 'short term borrowings as per the previous reported balance sheet number','previous quarter net cash accrual(nca)']:
         if key in data_dict:
             bucket_1_data += data_dict[key] + "\n"
     
@@ -650,7 +613,7 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
                     elif line.startswith('Matched_Criteria:'):
                         matched_criteria = line.replace('Matched_Criteria:', '').strip()
                         # Clean up criteria name
-                        matched_criteria = re.sub(r'^\[|\]$', '', matched_criteria).strip()
+                        matched_criteria = re.sub(r'^\[|\], '', matched_criteria).strip()
                     elif line.startswith('Risk_Level:'):
                         risk_level_text = line.replace('Risk_Level:', '').strip()
                         # Extract High or Low
@@ -661,7 +624,7 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
                     elif line.startswith('Reasoning:'):
                         reasoning = line.replace('Reasoning:', '').strip()
                         # Clean up reasoning
-                        reasoning = re.sub(r'^\[|\]$', '', reasoning).strip()
+                        reasoning = re.sub(r'^\[|\], '', reasoning).strip()
                 
                 # Update classification if we have all required fields
                 if (flag_number is not None and matched_criteria and 
@@ -896,7 +859,7 @@ high_risk_flag_summary: [if high risk, provide factual summary]
                 elif line.lower().startswith('high_risk_flag_summary:'):
                     high_risk_summary = line.split(':', 1)[1].strip()
                     # Clean up summary
-                    high_risk_summary = re.sub(r'^\[|\]$', '', high_risk_summary).strip()
+                    high_risk_summary = re.sub(r'^\[|\], '', high_risk_summary).strip()
             
             # Only include if confirmed as high risk and has summary
             if high_risk_flag and high_risk_summary:
@@ -1233,12 +1196,12 @@ For each identified negative red flag, strictly adhere to the following output f
 # MAIN PROCESSING PIPELINE WITH SPLIT FIRST ITERATION
 # ==============================================================================
 
-def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, queries_csv_path: str, previous_year_data: str, 
+def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, previous_year_data: str, 
                                output_folder: str = "results", 
                                api_key: str = None, azure_endpoint: str = None, 
                                api_version: str = None, deployment_name: str = "gpt-4.1"):
     """
-    Enhanced processing pipeline with split first iteration using existing Excel structure
+    Enhanced processing pipeline with split first iteration - CLEANED VERSION (removed queries_csv_path)
     """
    
     os.makedirs(output_folder, exist_ok=True)
@@ -1612,7 +1575,6 @@ def main():
     
     PATHS_CONFIG = {
         "pdf_folder_path": r"sterlin_dec_2022",
-        "queries_csv_path": r"EWS_prompts_v2_2.xlsx",
         "output_folder": r"sterlin_dec_results_split_iteration_5"
     }
     
@@ -1649,10 +1611,9 @@ Payables as per Previous reported balance sheet number	1402.86Cr
         
         start_time = time.time()
         
-        # Use the new split iteration function
+        # Use the cleaned split iteration function (removed queries_csv_path)
         result = process_pdf_enhanced_pipeline_with_split_iteration(
             pdf_path=pdf_file,
-            queries_csv_path=PATHS_CONFIG["queries_csv_path"],
             previous_year_data=PREVIOUS_YEAR_DATA,
             output_folder=PATHS_CONFIG["output_folder"],
             api_key=API_CONFIG["api_key"],
