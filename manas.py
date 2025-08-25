@@ -674,7 +674,7 @@ def extract_bullets_from_fourth_iteration(fourth_response: str) -> List[str]:
             continue
         
         # Extract bullet points (* or - markers)
-        if line.startswith('*') or line.startswith('-'):
+        if line.startswith(('*', '-')):
             bullet_text = line[1:].strip()  # Remove the bullet marker
             if bullet_text and len(bullet_text) > 10:  # Minimum length check
                 # Preserve category context in the bullet
@@ -1441,8 +1441,8 @@ Provide factual category summaries:"""
                 logger.error(f"Error in efficient bucket classification: {e}")
                 for summary_bullet in summary_bullets:
                     bullet_description = summary_bullet.strip()
-                    # Remove bullet point markers
-                    bullet_description = re.sub(r'^\*\s*|\-\s*', '', bullet_description).strip()
+                    # Remove bullet point markers - FIXED REGEX
+                    bullet_description = re.sub(r'^[*-]\s*', '', bullet_description).strip()
                     
                     classification_results.append({
                         'flag': bullet_description,
