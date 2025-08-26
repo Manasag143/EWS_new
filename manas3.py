@@ -66,6 +66,19 @@ high_risk_flag_summary: [if high risk, provide factual summary]
 
 
 
+
+
+
+
+
+
+
+
+
+# ==============================================================================
+# CHANGE 1: Updated classify_all_flags_with_enhanced_buckets function
+# ==============================================================================
+
 def classify_all_flags_with_enhanced_buckets(all_flags_with_context: List[str], previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, List[Dict[str, str]]]:
     """
     Enhanced classification using 8 total LLM calls for all flags combined - one call per bucket
@@ -181,6 +194,10 @@ Relevant_Financials: [extract all the relevant financial metrics if high risk is
             bucket_results[bucket_name] = f"Error in {bucket_name}: {str(e)}"
     
     return bucket_results
+
+# ==============================================================================
+# CHANGE 2: Updated parse_bucket_results_to_classifications_enhanced function
+# ==============================================================================
 
 def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, str], all_flags_with_context: List[str]) -> List[Dict[str, str]]:
     """
@@ -302,6 +319,10 @@ def parse_bucket_results_to_classifications_enhanced(bucket_results: Dict[str, s
     
     return flag_classifications
 
+# ==============================================================================
+# CHANGE 3: Updated generate_strict_high_risk_summary function
+# ==============================================================================
+
 def generate_strict_high_risk_summary(classification_results: List[Dict[str, str]], bucket_results: Dict[str, str], llm: AzureOpenAILLM) -> List[str]:
     """Generate VERY concise 1-2 line summaries for high risk flags using all bucket outputs as context"""
     
@@ -403,7 +424,7 @@ high_risk_flag_summary: [if high risk, provide factual summary]
                 elif line.lower().startswith('high_risk_flag_summary:'):
                     high_risk_summary = line.split(':', 1)[1].strip()
                     # Clean up summary
-                    high_risk_summary = re.sub(r'^\[|\], '', high_risk_summary).strip()
+                    high_risk_summary = re.sub(r'^\[|\]$', '', high_risk_summary).strip()
             
             # Only include if confirmed as high risk and has summary
             if high_risk_flag and high_risk_summary:
@@ -452,4 +473,194 @@ high_risk_flag_summary: [if high risk, provide factual summary]
             concise_summaries.append(fallback_summary)
     
     return concise_summaries
+
+# ==============================================================================
+# CHANGE 4: Updated create_word_document function
+# ==============================================================================
+
+def create_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
+                        classification_results: List[Dict[str, str]], summary_by_categories: Dict[str, List[str]], 
+                        output_folder: str, bucket_results: Dict[str, str], llm: AzureOpenAILLM) -> str:
+    """Create a formatted Word document with concise high risk summaries"""
+   
+    try:
+        doc = Document()
+       
+        # Document title
+        title = doc.add_heading(company_info, 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+       
+        # Flag Distribution section
+        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+        flag_dist_heading.runs[0].bold = True
+       
+        # Create flag distribution table
+        table = doc.add_table(rows=3, cols=2)
+        table.style = 'Table Grid'
+       
+        high_count = risk_counts.get('High', 0)
+        low_count = risk_counts.get('Low', 0)
+        total_count = high_count + low_count
+       
+        # Safely set table cells
+        if len(table.rows) >= 3 and len(table.columns) >= 2:
+            table.cell(0, 0).text = 'High Risk'
+            table.cell(0, 1).text = str(high_count)
+            table.cell(1, 0).text = 'Low Risk'
+            table.cell(1, 1).text = str(low_count)
+            table.cell(2, 0).text = 'Total Flags'
+            table.cell(2, 1).text = str(total_count)
+           
+            # Make headers bold
+            for i in range(3):
+                if len(table.cell(i, 0).paragraphs) > 0 and len(table.cell(i, 0).paragraphs[0].runs) > 0:
+                    table.cell(i, 0).paragraphs[0].runs[0].bold = True
+       
+        doc.add_paragraph('')
+       
+        # High Risk Flags section with concise summaries
+        high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
+        if high_risk_classifications and len(high_risk_classifications) > 0:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
+           
+            # Generate concise summaries for high risk flags using bucket results
+            concise_summaries = generate_strict_high_risk_summary(classification_results, bucket_results, llm)
+            
+            # Final deduplication check at Word document level
+            final_unique_summaries = []
+            seen_content = set()
+            
+            for summary in concise_summaries:
+                if not summary or not summary.strip():
+                    continue
+                    
+                # Create multiple normalized versions for comparison
+                normalized1 = re.sub(r'[^\w\s]', '', summary.lower()).strip()
+                normalized2 = re.sub(r'\b(the|a|an|and|or|but|in|on|at|to|for|of|with|by)\b', '', normalized1)
+                
+                # Check if this content is substantially different
+                is_unique = True
+                for seen in seen_content:
+                    # Calculate similarity
+                    words1 = set(normalized2.split())
+                    words2 = set(seen.split())
+                    if len(words1) == 0 or len(words2) == 0:
+                        continue
+                    similarity = len(words1.intersection(words2)) / len(words1.union(words2))
+                    if similarity > 0.6:  # If more than 60% similar, consider duplicate
+                        is_unique = False
+                        break
+                
+                if is_unique:
+                    final_unique_summaries.append(summary)
+                    seen_content.add(normalized2)
+            
+            for summary in final_unique_summaries:
+                p = doc.add_paragraph()
+                p.style = 'List Bullet'
+                p.add_run(summary)
+        else:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            if len(high_risk_heading.runs) > 0:
+                high_risk_heading.runs[0].bold = True
+            doc.add_paragraph('No high risk flags identified.')
+       
+        # Horizontal line
+        doc.add_paragraph('_' * 50)
+       
+        # Summary section (4th iteration results)
+        summary_heading = doc.add_heading('Summary', level=1)
+        if len(summary_heading.runs) > 0:
+            summary_heading.runs[0].bold = True
+       
+        # Add categorized summary - WITH SAFETY CHECK
+        if summary_by_categories and isinstance(summary_by_categories, dict) and len(summary_by_categories) > 0:
+            for category, bullets in summary_by_categories.items():
+                if bullets and len(bullets) > 0:
+                    cat_heading = doc.add_heading(str(category), level=2)
+                    if len(cat_heading.runs) > 0:
+                        cat_heading.runs[0].bold = True
+                   
+                    for bullet in bullets:
+                        p = doc.add_paragraph()
+                        p.style = 'List Bullet'
+                        p.add_run(str(bullet))
+                   
+                    doc.add_paragraph('')
+        else:
+            doc.add_paragraph('No categorized summary available.')
+            # Debug print to see what we actually received
+            print(f"Debug: summary_by_categories type: {type(summary_by_categories)}")
+            print(f"Debug: summary_by_categories content: {summary_by_categories}")
+       
+        # Save document
+        doc_filename = f"{pdf_name}_Report.docx"
+        doc_path = os.path.join(output_folder, doc_filename)
+        doc.save(doc_path)
+       
+        return doc_path
+        
+    except Exception as e:
+        logger.error(f"Error creating Word document: {e}")
+        print(f"Full error details: {str(e)}")
+        # Create minimal document as fallback
+        try:
+            doc = Document()
+            doc.add_heading(f"{pdf_name} - Analysis Report", 0)
+            doc.add_paragraph(f"High Risk Flags: {risk_counts.get('High', 0)}")
+            doc.add_paragraph(f"Low Risk Flags: {risk_counts.get('Low', 0)}")
+            doc.add_paragraph(f"Total Flags: {risk_counts.get('Total', 0)}")
+            
+            doc_filename = f"{pdf_name}_Report_Fallback.docx"
+            doc_path = os.path.join(output_folder, doc_filename)
+            doc.save(doc_path)
+            return doc_path
+        except Exception as e2:
+            logger.error(f"Error creating fallback document: {e2}")
+            return None
+
+# ==============================================================================
+# CHANGE 5: Updated main pipeline section for Word Document Creation
+# ==============================================================================
+
+# Replace the Word Document Creation section in your process_pdf_enhanced_pipeline_with_split_iteration function with:
+
+        # Word Document Creation
+        print("\nCreating Word document...")
+        try:
+            company_info = extract_company_info_from_pdf(pdf_path, llm)
+            
+            # SAFETY CHECK - Ensure summary_by_categories is a dictionary
+            if isinstance(fourth_response, str):
+                summary_by_categories = parse_summary_by_categories(fourth_response)
+            else:
+                summary_by_categories = fourth_response if isinstance(fourth_response, dict) else {}
+            
+            # Ensure it's a dictionary
+            if not isinstance(summary_by_categories, dict):
+                print(f"Warning: summary_by_categories is not a dict, got {type(summary_by_categories)}")
+                summary_by_categories = {}
+        
+            word_doc_path = create_word_document(
+                pdf_name=pdf_name,
+                company_info=company_info,
+                risk_counts=risk_counts,
+                classification_results=classification_results,  
+                summary_by_categories=summary_by_categories,
+                output_folder=output_folder,
+                bucket_results=bucket_results,  # CHANGED: Pass bucket_results instead of previous_year_data
+                llm=llm
+            )
+            
+            if word_doc_path:
+                print(f"Word document created: {word_doc_path}")
+            else:
+                print("Failed to create Word document")
+                
+        except Exception as e:
+            logger.error(f"Error creating Word document: {e}")
+            print(f"Full error: {str(e)}")
+            word_doc_path = None
  
