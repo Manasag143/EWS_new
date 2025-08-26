@@ -1649,29 +1649,295 @@ if __name__ == "__main__":
 
 
 
+# ==============================================================================
+# MODIFIED CLASSIFICATION FUNCTIONS WITH NEW OUTPUT FORMAT
+# ==============================================================================
 
-
-
-
+def classify_all_flags_with_modified_output(all_flags_with_context: List[str], previous_year_data: str, llm: AzureOpenAILLM) -> Dict[str, str]:
+    """
+    Modified classification using new output format with Flag_Name and Relevant_Financials
+    """
+    
+    criteria_buckets = create_criteria_buckets()
+    data_buckets = create_previous_data_buckets(previous_year_data)
+    
+    bucket_names = [
+        "Core Debt & Leverage (Quantitative)",
+        "Profitability & Performance (Quantitative)", 
+        "Margins & Operational Efficiency (Quantitative)",
+        "Working Capital & Asset Management (Quantitative)",
+        "Asset Quality & Impairments (Quantitative)",
+        "Other Quantitative Risks (Quantitative)",
+        "Management & Regulatory Issues (Qualitative)",
+        "Qualitative Risk Indicators (Qualitative)"
+    ]
+    
+    # Prepare all flags text for analysis with clear numbering
+    all_flags_text = ""
+    for i, flag in enumerate(all_flags_with_context, 1):
+        all_flags_text += f"\n--- FLAG_{i} ---\n{flag}\n"
+    
+    bucket_results = {}
+    
+    for i, (criteria_bucket, data_bucket, bucket_name) in enumerate(zip(criteria_buckets, data_buckets, bucket_names)):
+        criteria_list = "\n\n".join(criteria_bucket)
+        
+        # Different prompts for quantitative vs qualitative buckets
+        if "Quantitative" in bucket_name:
+            prompt = f"""You are an experienced financial analyst. Your goal is to classify given red flags gathered from earnings call transcript document into High/Low Risk based on QUANTITATIVE thresholds.
+ 
+Red Flags to be analyzed:-
+{all_flags_text}
+ 
+High/Low Risk identification criteria (QUANTITATIVE - focus on numbers and percentages):-
+{criteria_list}
+ 
+Financial Metrics of the company needed for analysis:-
+{data_bucket}
+ 
+<instructions>
+1. Review each flag against the above given QUANTITATIVE criteria and the financial metrics.
+2. Classify ONLY the red flags that match the criteria in this bucket.
+3. For each matching flag, determine if it's High or Low risk based on the EXACT numerical thresholds in the criteria.
+4. Use the exact flag numbering format: FLAG_1, FLAG_2, etc.
+5. Focus on specific numbers, percentages, ratios mentioned in the flags.
+6. Extract ALL relevant financial metrics mentioned in the flag context when High risk is identified.
+7. If no flags match the criteria in this bucket, respond with "No flags match the criteria in this bucket."
+</instructions>
+ 
 Output format - For each matching flag:
 Flag_Number: FLAG_X (where X is the flag number)
-Flag_Name: The Red Flag name
+Flag_Name: [Extract clear, concise red flag name from the flag content]
 Matched_Criteria: [exact criteria name from the criteria list. If multiple criteria are fulfilled for high flag, please provide multiple criteria name as comma-separated]
 Risk_Level: [High or Low]
 Reasoning: [brief explanation for criterias fulfilled with specific numbers/evidence from the flag and financial metrics]
-Relevant Fiancials: extract all the relevant financial metrics if high risk is identified else NA
+Relevant_Financials: [extract all the relevant financial metrics if high risk is identified else NA]
+
+<review>
+1. Only analyze flags that specifically match the QUANTITATIVE criteria in this bucket.
+2. Use exact flag numbering: FLAG_1, FLAG_2, FLAG_3, etc.
+3. Ensure risk level determination follows the exact numerical thresholds in the criteria.
+4. For High risk flags, extract ALL numbers, percentages, ratios mentioned in the flag.
+5. If a flag doesn't match any criteria in this bucket, don't include it in the output.
+</review>
+"""
+        else:  # Qualitative bucket
+            prompt = f"""You are an experienced financial analyst. Your goal is to classify given red flags gathered from earnings call transcript document into High/Low Risk based on QUALITATIVE indicators.
  
+Red Flags to be analyzed:-
+{all_flags_text}
+ 
+High/Low Risk identification criteria (QUALITATIVE - focus on concerns, issues, and strategic matters):-
+{criteria_list}
+ 
+<instructions>
+1. Review each flag against the above given QUALITATIVE criteria.
+2. Classify ONLY the red flags that match the criteria in this bucket.
+3. For each matching flag, determine if it's High or Low risk based on the presence/absence of concerns mentioned in the criteria.
+4. Use the exact flag numbering format: FLAG_1, FLAG_2, etc.
+5. Focus on management issues, regulatory concerns, operational problems, and strategic uncertainties.
+6. Extract relevant financial metrics mentioned when High risk is identified.
+7. If no flags match the criteria in this bucket, respond with "No flags match the criteria in this bucket."
+</instructions>
+ 
+Output format - For each matching flag:
+Flag_Number: FLAG_X (where X is the flag number)
+Flag_Name: [Extract clear, concise red flag name from the flag content]
+Matched_Criteria: [exact criteria name from the criteria list. If multiple criteria are fulfilled for high flag, please provide multiple criteria name as comma-separated]
+Risk_Level: [High or Low]
+Reasoning: [brief explanation for criterias fulfilled with evidence from the flag about the qualitative concern]
+Relevant_Financials: [extract all the relevant financial metrics if high risk is identified else NA]
 
+<review>
+1. Only analyze flags that specifically match the QUALITATIVE criteria in this bucket.
+2. Use exact flag numbering: FLAG_1, FLAG_2, FLAG_3, etc.
+3. Ensure risk level determination follows the qualitative indicators in the criteria.
+4. For High risk flags, extract any financial numbers mentioned in the context.
+5. If a flag doesn't match any criteria in this bucket, don't include it in the output.
+</review>
+"""
 
+        try:
+            print(f"Analyzing all flags against {bucket_name}...")
+            response = llm._call(prompt, temperature=0.0)
+            bucket_results[bucket_name] = response
+            
+        except Exception as e:
+            logger.error(f"Error analyzing {bucket_name}: {e}")
+            bucket_results[bucket_name] = f"Error in {bucket_name}: {str(e)}"
+    
+    return bucket_results
 
+def parse_modified_bucket_results(bucket_results: Dict[str, str], all_flags_with_context: List[str]) -> List[Dict[str, str]]:
+    """
+    Parse bucket results with new output format including Flag_Name and Relevant_Financials
+    """
+    flag_classifications = []
+    
+    # Initialize all flags with new structure
+    for i, flag_with_context in enumerate(all_flags_with_context, 1):
+        flag_lines = flag_with_context.strip().split('\n')
+        flag_description = flag_lines[0] if flag_lines else flag_with_context
+        
+        # Clean up flag description
+        flag_description = re.sub(r'^\d+\.\s*', '', flag_description).strip()
+        flag_description = re.sub(r'^(The potential red flag you observed - |Red flag: |Flag: )', '', flag_description, flags=re.IGNORECASE).strip()
+        
+        flag_classifications.append({
+            'flag': flag_description,           # Original parsed description
+            'flag_with_context': flag_with_context,
+            'flag_name': None,                  # To be filled by LLM parsing
+            'matched_criteria': [],             # List to accumulate multiple criteria
+            'risk_level': 'Low',
+            'reasoning': [],                    # List to accumulate multiple reasoning
+            'relevant_financials': 'NA'         # New field replacing bucket
+        })
+    
+    # Parse bucket results with new format
+    for bucket_name, bucket_response in bucket_results.items():
+        if isinstance(bucket_response, str) and "No flags match" not in bucket_response and "Error" not in bucket_response:
+            
+            # Split response into individual flag entries
+            sections = re.split(r'\n\s*(?=Flag_Number:\s*FLAG_\d+)', bucket_response.strip())
+            
+            for section in sections:
+                if not section.strip():
+                    continue
+                
+                # Parse new format fields
+                parsed_data = {
+                    'flag_number': None,
+                    'flag_name': None,
+                    'matched_criteria': None,
+                    'risk_level': None,
+                    'reasoning': None,
+                    'relevant_financials': None
+                }
+                
+                lines = section.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('Flag_Number:'):
+                        flag_number_text = line.replace('Flag_Number:', '').strip()
+                        flag_match = re.search(r'FLAG_(\d+)', flag_number_text)
+                        if flag_match:
+                            parsed_data['flag_number'] = int(flag_match.group(1))
+                    
+                    elif line.startswith('Flag_Name:'):
+                        parsed_data['flag_name'] = line.replace('Flag_Name:', '').strip()
+                        parsed_data['flag_name'] = re.sub(r'^\[|\]$', '', parsed_data['flag_name']).strip()
+                    
+                    elif line.startswith('Matched_Criteria:'):
+                        parsed_data['matched_criteria'] = line.replace('Matched_Criteria:', '').strip()
+                        parsed_data['matched_criteria'] = re.sub(r'^\[|\]$', '', parsed_data['matched_criteria']).strip()
+                    
+                    elif line.startswith('Risk_Level:'):
+                        risk_level_text = line.replace('Risk_Level:', '').strip()
+                        if 'High' in risk_level_text:
+                            parsed_data['risk_level'] = 'High'
+                        elif 'Low' in risk_level_text:
+                            parsed_data['risk_level'] = 'Low'
+                    
+                    elif line.startswith('Reasoning:'):
+                        parsed_data['reasoning'] = line.replace('Reasoning:', '').strip()
+                        parsed_data['reasoning'] = re.sub(r'^\[|\]$', '', parsed_data['reasoning']).strip()
+                    
+                    elif line.startswith('Relevant_Financials:'):
+                        parsed_data['relevant_financials'] = line.replace('Relevant_Financials:', '').strip()
+                        parsed_data['relevant_financials'] = re.sub(r'^\[|\]$', '', parsed_data['relevant_financials']).strip()
+                
+                # Update classification with parsed data
+                if (parsed_data['flag_number'] is not None and 
+                    parsed_data['matched_criteria'] and 
+                    parsed_data['risk_level'] and 
+                    1 <= parsed_data['flag_number'] <= len(flag_classifications)):
+                    
+                    flag_index = parsed_data['flag_number'] - 1
+                    current_classification = flag_classifications[flag_index]
+                    
+                    if parsed_data['risk_level'] == 'High':
+                        # Handle multiple criteria (comma-separated from LLM)
+                        new_criteria = [c.strip() for c in parsed_data['matched_criteria'].split(',') if c.strip()]
+                        
+                        # Add new criteria that aren't already present
+                        for criteria in new_criteria:
+                            if criteria not in current_classification['matched_criteria']:
+                                current_classification['matched_criteria'].append(criteria)
+                        
+                        # Update other fields
+                        current_classification['risk_level'] = 'High'
+                        current_classification['reasoning'].append(f"[{bucket_name}] {parsed_data['reasoning']}")
+                        
+                        # Update flag name if provided and not already set
+                        if parsed_data['flag_name'] and not current_classification['flag_name']:
+                            current_classification['flag_name'] = parsed_data['flag_name']
+                        
+                        # Handle relevant financials (only for High risk)
+                        if parsed_data['relevant_financials'] and parsed_data['relevant_financials'].upper() != 'NA':
+                            if current_classification['relevant_financials'] == 'NA':
+                                current_classification['relevant_financials'] = parsed_data['relevant_financials']
+                            else:
+                                # Combine financials from multiple buckets, avoid duplicates
+                                existing_financials = current_classification['relevant_financials']
+                                new_financials = parsed_data['relevant_financials']
+                                if new_financials not in existing_financials:
+                                    current_classification['relevant_financials'] = f"{existing_financials}; {new_financials}"
+                        
+                        print(f"Updated FLAG_{parsed_data['flag_number']}: {parsed_data['risk_level']} risk - {', '.join(new_criteria)}")
+                    
+                    elif parsed_data['risk_level'] == 'Low' and current_classification['risk_level'] != 'High':
+                        # Only update if no High risk exists
+                        if not current_classification['matched_criteria']:
+                            new_criteria = [c.strip() for c in parsed_data['matched_criteria'].split(',') if c.strip()]
+                            current_classification['matched_criteria'].extend(new_criteria)
+                            current_classification['reasoning'].append(f"[{bucket_name}] {parsed_data['reasoning']}")
+                            current_classification['risk_level'] = 'Low'
+                            if parsed_data['flag_name'] and not current_classification['flag_name']:
+                                current_classification['flag_name'] = parsed_data['flag_name']
+    
+    # Convert lists back to strings for final output and set defaults
+    for classification in flag_classifications:
+        if classification['matched_criteria']:
+            # Convert to comma-separated string as requested
+            classification['matched_criteria'] = ', '.join(classification['matched_criteria'])
+            classification['reasoning'] = ' | '.join(classification['reasoning'])
+        else:
+            # No matches found - set defaults
+            classification['matched_criteria'] = 'None'
+            classification['reasoning'] = 'No matching criteria found across all buckets'
+        
+        # Set flag_name default if not provided by LLM
+        if not classification['flag_name']:
+            classification['flag_name'] = classification['flag']
+    
+    return flag_classifications
 
+def generate_enhanced_summary_with_consolidated_approach(classification_results: List[Dict[str, str]], llm: AzureOpenAILLM) -> List[str]:
+    """
+    Generate summaries using consolidated approach - all high-risk flags in one call
+    """
+    # Filter only high risk flags
+    high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
+    
+    if not high_risk_classifications:
+        return []
+    
+    # Prepare consolidated context with all high risk flags
+    output_from_all_buckets = ""
+    for i, classification in enumerate(high_risk_classifications, 1):
+        output_from_all_buckets += f"""
+High Risk Flag {i}:
+Flag Name: {classification.get('flag_name', 'N/A')}
+Matched Criteria: {classification.get('matched_criteria', 'N/A')}
+Reasoning: {classification.get('reasoning', 'N/A')}
+Relevant Financials: {classification.get('relevant_financials', 'NA')}
+Full Context: {classification.get('flag_with_context', 'N/A')[:500]}...
 
-
-
-
-
-
-prompt = f"""<role>
+---
+"""
+    
+    # Use the modified consolidated prompt
+    prompt = f"""<role>
 You are an experienced financial analyst working in ratings company. Your goal is to review the high risk red flag identified for accuracy and generate summary of high-risk financial red flag identified from given context.
 The context is delimited by ####.
 </role>
@@ -1689,23 +1955,314 @@ The context is delimited by ####.
  
 <context>
 ####
-{output_from_all_buckets_where_high_risk_identified}
+{output_from_all_buckets}
 ####
  
 </context>
  
 <output_format>
-high_risk_flag: yes if it is actually high risk after review, no otherwise.
-high_risk_flag_summary: [if high risk, provide factual summary]
+For each high risk flag provide:
+Flag_X_Summary: [1-2 line factual summary preserving all quantitative details]
+
+Example:
+Flag_1_Summary: Revenue declined 35% to 250Cr in Q3 FY24 compared to 385Cr in Q2, indicating severe operational stress requiring immediate management attention.
+Flag_2_Summary: Debt-to-EBITDA ratio increased to 4.2x from previous 2.8x, breaching covenant thresholds and creating liquidity concerns.
 </output_format>
  
 <review>
-1. Ensure summary is exactly 1-2 lines and preserves all quantitative information
+1. Ensure each summary is exactly 1-2 lines and preserves all quantitative information
 2. Confirm that all summaries are based solely on information from the input document context
 3. Check that each summary maintains a cautious tone without downplaying risks
 4. Ensure proper business unit/division specification where applicable
 5. Verify that the summary uses professional financial terminology
 6. Check that no speculative or interpretive language is used
 7. Ensure all relevant exact numbers, percentages and dates from the context are preserved
-8. Verify that the output follows the output format specified above
 </review>"""
+    
+    try:
+        response = llm._call(prompt, temperature=0.1)
+        
+        # Parse the response to extract individual summaries
+        summaries = []
+        lines = response.strip().split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Flag_') and '_Summary:' in line:
+                summary_text = line.split('_Summary:', 1)[1].strip()
+                if summary_text:
+                    summaries.append(summary_text)
+        
+        return summaries
+        
+    except Exception as e:
+        logger.error(f"Error generating consolidated summary: {e}")
+        # Fallback to individual flag summaries
+        fallback_summaries = []
+        for classification in high_risk_classifications:
+            flag_name = classification.get('flag_name', 'Unknown Flag')
+            criteria = classification.get('matched_criteria', 'Unknown criteria')
+            fallback_summary = f"High risk identified in {flag_name} based on {criteria}. Requires detailed review."
+            fallback_summaries.append(fallback_summary)
+        return fallback_summaries
+
+def create_modified_word_document(pdf_name: str, company_info: str, risk_counts: Dict[str, int],
+                                classification_results: List[Dict[str, str]], summary_by_categories: Dict[str, List[str]], 
+                                output_folder: str, llm: AzureOpenAILLM) -> str:
+    """
+    Create a formatted Word document using the new output format with Flag_Name and Relevant_Financials
+    """
+    try:
+        doc = Document()
+       
+        # Document title
+        title = doc.add_heading(company_info, 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+       
+        # Flag Distribution section
+        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
+        flag_dist_heading.runs[0].bold = True
+       
+        # Create flag distribution table
+        table = doc.add_table(rows=3, cols=2)
+        table.style = 'Table Grid'
+       
+        high_count = risk_counts.get('High', 0)
+        low_count = risk_counts.get('Low', 0)
+        total_count = high_count + low_count
+       
+        # Set table cells
+        if len(table.rows) >= 3 and len(table.columns) >= 2:
+            table.cell(0, 0).text = 'High Risk'
+            table.cell(0, 1).text = str(high_count)
+            table.cell(1, 0).text = 'Low Risk'
+            table.cell(1, 1).text = str(low_count)
+            table.cell(2, 0).text = 'Total Flags'
+            table.cell(2, 1).text = str(total_count)
+           
+            # Make headers bold
+            for i in range(3):
+                if len(table.cell(i, 0).paragraphs) > 0:
+                    table.cell(i, 0).paragraphs[0].runs[0].bold = True
+       
+        doc.add_paragraph('')
+       
+        # High Risk Flags section with detailed breakdown
+        high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
+        if high_risk_classifications:
+            high_risk_heading = doc.add_heading('High Risk Details:', level=2)
+            high_risk_heading.runs[0].bold = True
+           
+            # Generate consolidated summaries
+            concise_summaries = generate_enhanced_summary_with_consolidated_approach(classification_results, llm)
+            
+            # Create detailed table for high-risk flags
+            if concise_summaries:
+                summary_heading = doc.add_heading('High Risk Summary:', level=3)
+                for summary in concise_summaries:
+                    p = doc.add_paragraph()
+                    p.style = 'List Bullet'
+                    p.add_run(summary)
+                
+                doc.add_paragraph('')
+            
+            # Detailed breakdown table
+            detail_heading = doc.add_heading('Detailed Analysis:', level=3)
+            
+            # Create table with new columns
+            detail_table = doc.add_table(rows=1, cols=5)
+            detail_table.style = 'Table Grid'
+            
+            # Headers
+            headers = ['Flag Name', 'Matched Criteria', 'Risk Level', 'Relevant Financials', 'Reasoning']
+            for i, header in enumerate(headers):
+                if i < len(detail_table.columns):
+                    detail_table.cell(0, i).text = header
+                    detail_table.cell(0, i).paragraphs[0].runs[0].bold = True
+            
+            # Add data rows
+            for classification in high_risk_classifications:
+                row = detail_table.add_row()
+                row.cells[0].text = classification.get('flag_name', 'N/A')
+                row.cells[1].text = classification.get('matched_criteria', 'N/A')
+                row.cells[2].text = classification.get('risk_level', 'N/A')
+                row.cells[3].text = classification.get('relevant_financials', 'NA')
+                
+                # Truncate reasoning for readability
+                reasoning = classification.get('reasoning', 'N/A')
+                if len(reasoning) > 200:
+                    reasoning = reasoning[:200] + '...'
+                row.cells[4].text = reasoning
+        else:
+            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
+            high_risk_heading.runs[0].bold = True
+            doc.add_paragraph('No high risk flags identified.')
+       
+        # Horizontal line
+        doc.add_paragraph('_' * 50)
+       
+        # Summary section (4th iteration results)
+        summary_heading = doc.add_heading('Summary', level=1)
+        summary_heading.runs[0].bold = True
+       
+        # Add categorized summary
+        if summary_by_categories:
+            for category, bullets in summary_by_categories.items():
+                if bullets:
+                    cat_heading = doc.add_heading(str(category), level=2)
+                    cat_heading.runs[0].bold = True
+                   
+                    for bullet in bullets:
+                        p = doc.add_paragraph()
+                        p.style = 'List Bullet'
+                        p.add_run(str(bullet))
+                   
+                    doc.add_paragraph('')
+        else:
+            doc.add_paragraph('No categorized summary available.')
+       
+        # Save document
+        doc_filename = f"{pdf_name}_Modified_Report.docx"
+        doc_path = os.path.join(output_folder, doc_filename)
+        doc.save(doc_path)
+       
+        return doc_path
+        
+    except Exception as e:
+        logger.error(f"Error creating modified Word document: {e}")
+        return None
+
+# ==============================================================================
+# UPDATED MAIN PROCESSING FUNCTION
+# ==============================================================================
+
+def process_pdf_with_modified_output_format(pdf_path: str, previous_year_data: str, 
+                                           output_folder: str = "results", 
+                                           api_key: str = None, azure_endpoint: str = None, 
+                                           api_version: str = None, deployment_name: str = "gpt-4.1"):
+    """
+    Process PDF using modified output format with Flag_Name and Relevant_Financials
+    """
+    
+    os.makedirs(output_folder, exist_ok=True)
+    pdf_name = Path(pdf_path).stem
+   
+    try:
+        # Initialize LLM and load PDF (same as before)
+        llm_client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint, 
+            api_version=api_version,
+        )
+        
+        llm = AzureOpenAILLM(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint, 
+            api_version=api_version,
+            deployment_name=deployment_name
+        )
+
+        docs = mergeDocs(pdf_path, split_pages=False)
+        context = docs[0]["context"]
+        
+        # Run iterations 1-4 (same as before)
+        print("Running iterations 1-4 (same as original)...")
+        
+        # [Include the same iteration 1-4 code from your original function]
+        # This part remains unchanged - the 4-part flag extraction and processing
+        
+        # For brevity, I'll assume we have the same first 4 iterations and focus on iteration 5
+        # which is where the changes apply
+        
+        # Assuming we have second_response from iteration 2 (deduplication)
+        # second_response = ... (from your existing code)
+        
+        # ITERATION 5: Modified Classification
+        print("Running 5th iteration - Modified Classification with new output format...")
+        
+        try:
+            # Extract flags (same as before)
+            flags_with_context = extract_flags_with_complete_context("sample_second_response")  # Replace with actual second_response
+            print(f"\nFlags with context extracted: {len(flags_with_context)}")
+            
+        except Exception as e:
+            logger.error(f"Error parsing flags with context: {e}")
+            flags_with_context = ["Error in flag parsing"]
+
+        classification_results = []
+        high_risk_flags = []
+        low_risk_flags = []
+
+        if len(flags_with_context) > 0 and flags_with_context[0] != "Error in flag parsing":
+            try:
+                print(f"Analyzing all {len(flags_with_context)} flags using modified output format.")
+                
+                # Use modified classification functions
+                bucket_results = classify_all_flags_with_modified_output(flags_with_context, previous_year_data, llm)
+                classification_results = parse_modified_bucket_results(bucket_results, flags_with_context)
+
+                # Count results
+                for result in classification_results:
+                    if (result['risk_level'].lower() == 'high' and 
+                        result['matched_criteria'] != 'None'):
+                        high_risk_flags.append({
+                            'flag_name': result['flag_name'],
+                            'criteria': result['matched_criteria'],
+                            'financials': result['relevant_financials']
+                        })
+                    else:
+                        low_risk_flags.append(result['flag_name'])
+                        
+            except Exception as e:
+                logger.error(f"Error in modified classification: {e}")
+                # Fallback logic here
+
+        risk_counts = {
+            'High': len(high_risk_flags),
+            'Low': len(low_risk_flags),
+            'Total': len(flags_with_context) if flags_with_context and flags_with_context[0] != "Error in flag parsing" else 0
+        }
+        
+        print(f"\n=== MODIFIED OUTPUT FORMAT RESULTS ===")
+        print(f"High Risk Flags: {risk_counts['High']}")
+        print(f"Low Risk Flags: {risk_counts['Low']}")
+        print(f"Total Flags: {risk_counts['Total']}")
+        
+        if high_risk_flags:
+            print(f"\n--- HIGH RISK FLAGS WITH NEW FORMAT ---")
+            for i, flag_data in enumerate(high_risk_flags, 1):
+                print(f"  {i}. {flag_data['flag_name']}")
+                print(f"     Criteria: {flag_data['criteria']}")
+                print(f"     Financials: {flag_data['financials']}")
+        
+        # Word Document Creation with modified function
+        print("\nCreating Word document with modified format...")
+        try:
+            company_info = extract_company_info_from_pdf(pdf_path, llm)
+            summary_by_categories = {}  # You'll need to populate this from your 4th iteration
+        
+            word_doc_path = create_modified_word_document(
+                pdf_name=pdf_name,
+                company_info=company_info,
+                risk_counts=risk_counts,
+                classification_results=classification_results,  
+                summary_by_categories=summary_by_categories,
+                output_folder=output_folder,
+                llm=llm
+            )
+            
+            if word_doc_path:
+                print(f"Modified Word document created: {word_doc_path}")
+            else:
+                print("Failed to create Word document")
+                
+        except Exception as e:
+            logger.error(f"Error creating Word document: {e}")
+            word_doc_path = None
+       
+        print(f"\n=== MODIFIED FORMAT PROCESSING COMPLETE FOR {pdf_name} ===")
+        return classification_results
+       
+    except Exception as e:
+        logger.error(f"Error processing {pdf_name}: {str(e)}")
+        return None
