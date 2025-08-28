@@ -1,121 +1,60 @@
-def generate_strict_high_risk_summary(classification_results: List[Dict[str, str]], previous_year_data: str, llm: AzureOpenAILLM) -> List[str]:
-    """Generate VERY concise 1-2 line summaries for high risk flags using classification data"""
+def create_iteration1_word_document(pdf_name: str, company_info: str, first_response: str, output_folder: str) -> str:
+    """Create a simple Word document for Iteration 1 results"""
     
-    # Filter only high risk flags
-    high_risk_classifications = [result for result in classification_results if result['risk_level'] == 'High']
-    
-    if not high_risk_classifications:
-        return []
-    
-    # Create consolidated output from classification results
-    output_from_all_buckets_where_high_risk_identified = ""
-    
-    for i, classification in enumerate(high_risk_classifications, 1):
-        output_from_all_buckets_where_high_risk_identified += f"""
---- HIGH RISK CLASSIFICATION {i} ---
-Original Flag Number: {classification.get('original_flag_number', 'Unknown')}
-Flag: {classification.get('flag', 'Unknown flag')}
-Matched Criteria: {classification.get('matched_criteria', 'Unknown criteria')}
-Risk Level: {classification.get('risk_level', 'Unknown')}
-Reasoning: {classification.get('reasoning', 'No reasoning provided')}
-Relevant Financials: {classification.get('relevant_financials', 'NA')}
-
-"""
-    
-    # Single LLM call with new prompt format
-    prompt = f"""<role>
-You are an experienced financial analyst working in ratings company. Your goal is to review the high risk red flag identified for accuracy and generate summary of high-risk financial red flag identified from given context.
-The context is delimited by ####.
-</role>
- 
-<instructions>
-1. Analyze the financials, red flag identified and the contexts, the criteria which led to high risk identification.
-2. Ensure the accuracy of the identification of the red flag to be high risk.
-3. Create a very concise 1-2 line summary for each high-risk flag.
-4. Include exact numbers, percentages, ratios, and dates whenever mentioned which led to identification of high risk flag.
-5. Be factual and direct - no speculation or interpretation.
-6. Ensure subsequent statements are cautious and do not downplay the risk.
-7. Avoid neutral/positive statements that contradict the warning.
-8. If applicable, specify whether the flag is for: specific business unit/division, consolidated financials, standalone financials, or geographical region. Maintain professional financial terminology.
-</instructions>
- 
-<context>
-####
-{output_from_all_buckets_where_high_risk_identified}
-####
- 
-</context>
- 
-<output_format>
-For each high risk classification, provide:
-Classification_Number: [1, 2, 3, etc.]
-high_risk_flag: yes if it is actually high risk after review, no otherwise.
-high_risk_flag_summary: [if high risk, provide factual summary]
-</output_format>
- 
-<review>
-1. Ensure summary is exactly 1-2 lines and preserves all quantitative information
-2. Confirm that all summaries are based solely on information from the input document context
-3. Check that each summary maintains a cautious tone without downplaying risks
-4. Ensure proper business unit/division specification where applicable
-5. Verify that the summary uses professional financial terminology
-6. Check that no speculative or interpretive language is used
-7. Ensure all relevant exact numbers, percentages and dates from the context are preserved
-8. Verify that the output follows the output format specified above
-</review>"""
-
     try:
-        response = llm._call(prompt, temperature=0.1)
+        doc = Document()
         
-        # Parse the response to extract summaries
-        concise_summaries = []
-        lines = response.strip().split('\n')
+        # Document title
+        title = doc.add_heading(f'{company_info} - Iteration 1 Results', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         
-        current_classification = {}
+        # Add the first iteration content
+        content_heading = doc.add_heading('Red Flags Identified:', level=2)
+        
+        # Add the response content with proper formatting
+        lines = first_response.split('\n')
         for line in lines:
             line = line.strip()
-            
-            if line.startswith('Classification_Number:'):
-                # Save previous classification if it exists and is confirmed high risk
-                if (current_classification.get('high_risk_flag') == 'yes' and 
-                    current_classification.get('high_risk_flag_summary')):
-                    summary = current_classification['high_risk_flag_summary']
-                    # Clean up summary
-                    clean_summary = re.sub(r'^\[|\]$', '', summary).strip()
-                    if clean_summary and not clean_summary.endswith('.'):
-                        clean_summary += '.'
-                    if clean_summary:
-                        concise_summaries.append(clean_summary)
-                
-                # Start new classification
-                current_classification = {}
-                
-            elif line.startswith('high_risk_flag:'):
-                flag_value = line.split(':', 1)[1].strip().lower()
-                current_classification['high_risk_flag'] = 'yes' if 'yes' in flag_value else 'no'
-                
-            elif line.startswith('high_risk_flag_summary:'):
-                summary = line.split(':', 1)[1].strip()
-                current_classification['high_risk_flag_summary'] = summary
+            if line:
+                if re.match(r'^\d+\.\s+', line):
+                    # This is a new flag - make it bold
+                    p = doc.add_paragraph()
+                    p.add_run(line).bold = True
+                elif line.startswith('Context - '):
+                    # This is context - make it italic
+                    p = doc.add_paragraph()
+                    p.add_run('   ' + line).italic = True
+                else:
+                    # Regular content
+                    doc.add_paragraph(line)
         
-        # Process the last classification
-        if (current_classification.get('high_risk_flag') == 'yes' and 
-            current_classification.get('high_risk_flag_summary')):
-            summary = current_classification['high_risk_flag_summary']
-            clean_summary = re.sub(r'^\[|\]$', '', summary).strip()
-            if clean_summary and not clean_summary.endswith('.'):
-                clean_summary += '.'
-            if clean_summary:
-                concise_summaries.append(clean_summary)
+        # Save document
+        doc_filename = f"{pdf_name}_Iteration1_RedFlags.docx"
+        doc_path = os.path.join(output_folder, doc_filename)
+        doc.save(doc_path)
         
-        return concise_summaries
+        return doc_path
         
     except Exception as e:
-        logger.error(f"Error generating high risk summaries: {e}")
-        # Fallback summaries
-        fallback_summaries = []
-        for classification in high_risk_classifications[:10]:  # Limit fallback
-            criteria = classification.get('matched_criteria', 'Unknown criteria')
-            fallback_summary = f"High risk identified: {criteria}. Review required based on analysis."
-            fallback_summaries.append(fallback_summary)
-        return fallback_summaries
+        logger.error(f"Error creating Iteration 1 Word document: {e}")
+        return None
+
+# Add this call in your main processing function after first iteration
+def process_pdf_enhanced_pipeline_with_split_iteration(pdf_path: str, previous_year_data: str, 
+                               output_folder: str = "results", 
+                               api_key: str = None, azure_endpoint: str = None, 
+                               api_version: str = None, deployment_name: str = "gpt-4.1"):
+    # ... existing code ...
+    
+    # After getting first_response, add this:
+    iteration1_doc_path = create_iteration1_word_document(
+        pdf_name=pdf_name,
+        company_info=company_info,
+        first_response=first_response,
+        output_folder=output_folder
+    )
+    
+    if iteration1_doc_path:
+        print(f"Iteration 1 Word document created: {iteration1_doc_path}")
+    
+    # ... rest of existing code ...
