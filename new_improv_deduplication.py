@@ -108,14 +108,18 @@ print(result)
 
 
 
+# ==============================================================================
+# STEP 1: Add ONLY the deduplication function
+# ==============================================================================
 
-# Add this function to your existing code
 def deduplicate_high_risk_flags(high_risk_flags, api_key, azure_endpoint, api_version, deployment_name="gpt-4.1"):
     """
     Deduplicate high risk flags to remove redundant entries
     """
     if not high_risk_flags or len(high_risk_flags) <= 1:
         return high_risk_flags
+    
+    from openai import AzureOpenAI
     
     client = AzureOpenAI(
         api_key=api_key,
@@ -136,7 +140,7 @@ Rules:
 - One financial value cannot be part of multiple red flags
 - Preserve all numbers and percentages
 - Preserve all qualitative issues
-- Number the final deduplicated flags
+- Use bullet points for final deduplicated flags
 - Flags should have 1-2 sentences
 - Do not lose data for qualitative issues
 - Only mention original quotes in filtered list of red flags, no explanatory tone
@@ -146,9 +150,9 @@ Input Red Flags:
 {flags_text}
 
 OUTPUT FORMAT:
-1. [First deduplicated flag]
-2. [Second deduplicated flag]
-etc.
+* [First deduplicated flag]
+* [Second deduplicated flag]
+* [Third deduplicated flag]
 
 Review:-
 1. Only output the flags, no explanation needed.
@@ -170,9 +174,9 @@ Review:-
         lines = deduplicated_text.split('\n')
         for line in lines:
             line = line.strip()
-            # Match numbered items (1. 2. etc.)
-            if re.match(r'^\d+\.\s+', line):
-                flag_text = re.sub(r'^\d+\.\s+', '', line)
+            # Match bullet points (* or -)
+            if line.startswith('*') or line.startswith('-'):
+                flag_text = line[1:].strip()  # Remove bullet character
                 if flag_text:
                     deduplicated_flags.append(flag_text)
         
@@ -182,182 +186,107 @@ Review:-
         logger.error(f"Error in deduplication: {e}")
         return high_risk_flags
 
-# Modified Word document creation function
-def create_word_document_with_deduplication(pdf_name: str, company_info: str, 
-                                          original_risk_counts: Dict[str, int],
-                                          final_risk_counts: Dict[str, int],
-                                          deduplicated_high_risk_flags: List[str],
-                                          classification_results: List[Dict[str, str]], 
-                                          summary_by_categories: Dict[str, List[str]], 
-                                          output_folder: str) -> str:
-    """Create a Word document with deduplication information"""
-    
-    try:
-        doc = Document()
-        
-        # Document title
-        title = doc.add_heading(company_info, 0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
-        # Flag Distribution section with before/after deduplication
-        flag_dist_heading = doc.add_heading('Flag Distribution:', level=2)
-        flag_dist_heading.runs[0].bold = True
-        
-        # Create comparison table
-        table = doc.add_table(rows=3, cols=3)
-        table.style = 'Table Grid'
-        
-        # Header row
-        table.cell(0, 0).text = 'Risk Level'
-        table.cell(0, 1).text = 'Before Deduplication'
-        table.cell(0, 2).text = 'After Deduplication'
-        
-        # High risk row
-        table.cell(1, 0).text = 'High Risk'
-        table.cell(1, 1).text = str(original_risk_counts.get('High', 0))
-        table.cell(1, 2).text = str(final_risk_counts.get('High', 0))
-        
-        # Low risk row (unchanged)
-        table.cell(2, 0).text = 'Low Risk'
-        table.cell(2, 1).text = str(original_risk_counts.get('Low', 0))
-        table.cell(2, 2).text = str(original_risk_counts.get('Low', 0))
-        
-        doc.add_paragraph('')
-        
-        # High Risk Flags section with deduplicated flags
-        if deduplicated_high_risk_flags and len(deduplicated_high_risk_flags) > 0:
-            high_risk_heading = doc.add_heading('High Risk Summary (Deduplicated):', level=2)
-            if len(high_risk_heading.runs) > 0:
-                high_risk_heading.runs[0].bold = True
-            
-            for flag_text in deduplicated_high_risk_flags:
-                p = doc.add_paragraph()
-                p.style = 'List Bullet'
-                p.add_run(flag_text)
-        else:
-            high_risk_heading = doc.add_heading('High Risk Summary:', level=2)
-            if len(high_risk_heading.runs) > 0:
-                high_risk_heading.runs[0].bold = True
-            doc.add_paragraph('No high risk flags identified.')
-        
-        # Horizontal line
-        doc.add_paragraph('_' * 50)
-        
-        # Summary section (unchanged)
-        summary_heading = doc.add_heading('Summary', level=1)
-        if len(summary_heading.runs) > 0:
-            summary_heading.runs[0].bold = True
-        
-        # Add categorized summary
-        if summary_by_categories and len(summary_by_categories) > 0:
-            for category, bullets in summary_by_categories.items():
-                if bullets and len(bullets) > 0:
-                    cat_heading = doc.add_heading(str(category), level=2)
-                    if len(cat_heading.runs) > 0:
-                        cat_heading.runs[0].bold = True
-                    
-                    for bullet in bullets:
-                        p = doc.add_paragraph()
-                        p.style = 'List Bullet'
-                        p.add_run(str(bullet))
-                    
-                    doc.add_paragraph('')
-        else:
-            doc.add_paragraph('No categorized summary available.')
-        
-        # Save document
-        doc_filename = f"{pdf_name}_Report_Deduplicated.docx"
-        doc_path = os.path.join(output_folder, doc_filename)
-        doc.save(doc_path)
-        
-        return doc_path
-        
-    except Exception as e:
-        logger.error(f"Error creating Word document: {e}")
-        return None
+# ==============================================================================
+# STEP 2: In your existing function, FIND this section (around line 463):
+# ==============================================================================
 
-# Modified main processing function - add this after the 5th iteration
-def process_pdf_enhanced_pipeline_with_deduplication(pdf_path: str, previous_year_data: str, 
-                                                   output_folder: str = "results", 
-                                                   api_key: str = None, azure_endpoint: str = None, 
-                                                   api_version: str = None, deployment_name: str = "gpt-4.1"):
-    """Enhanced pipeline with high-risk deduplication layer"""
-    
-    # [Previous code remains the same until after 5th iteration...]
-    
-    # After 5th iteration classification results are obtained:
-    
-    original_high_risk_flags = [result['flag'] for result in classification_results 
-                              if result['risk_level'].lower() == 'high' and 
-                              result['matched_criteria'] != 'None']
-    
-    original_risk_counts = {
-        'High': len(original_high_risk_flags),
-        'Low': len([result for result in classification_results 
-                   if result['risk_level'].lower() == 'low']),
-        'Total': len(classification_results)
-    }
-    
-    print(f"\nOriginal High Risk Flags: {original_risk_counts['High']}")
-    
-    # NEW: 6th Layer - High Risk Deduplication
-    deduplicated_high_risk_flags = []
-    if original_high_risk_flags and len(original_high_risk_flags) > 0:
-        print("Running 6th layer - High Risk Deduplication...")
+        risk_counts = {
+            'High': len(high_risk_flags),
+            'Low': len(low_risk_flags),
+            'Total': len(bullet_points) if bullet_points else 0
+        }
         
-        deduplicated_high_risk_flags = deduplicate_high_risk_flags(
-            high_risk_flags=original_high_risk_flags,
-            api_key=api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=api_version,
-            deployment_name=deployment_name
-        )
+        print(f"\n=== PER FLAG CLASSIFICATION RESULTS ===")
+        print(f"Total LLM calls made: {len(bullet_points)} (one per flag)")
+        print(f"High Risk Flags: {risk_counts['High']}")
+        print(f"Low Risk Flags: {risk_counts['Low']}")
+        print(f"Total Flags: {risk_counts['Total']}")
         
-        print(f"After Deduplication: {len(deduplicated_high_risk_flags)} high risk flags")
-        print("Deduplicated High Risk Flags:")
-        for i, flag in enumerate(deduplicated_high_risk_flags, 1):
-            print(f"  {i}. {flag}")
-    else:
-        print("No high risk flags to deduplicate")
-    
-    # Updated risk counts after deduplication
-    final_risk_counts = {
-        'High': len(deduplicated_high_risk_flags),
-        'Low': original_risk_counts['Low'],  # Unchanged
-        'Total': len(deduplicated_high_risk_flags) + original_risk_counts['Low']
-    }
-    
-    # Create Word document with deduplication information
-    print("\nCreating Word document with deduplication...")
-    try:
-        company_info = extract_company_info_from_pdf(pdf_path, llm)
-        summary_by_categories = parse_summary_by_categories(fourth_response)
-    
-        word_doc_path = create_word_document_with_deduplication(
-            pdf_name=pdf_name,
-            company_info=company_info,
-            original_risk_counts=original_risk_counts,
-            final_risk_counts=final_risk_counts,
-            deduplicated_high_risk_flags=deduplicated_high_risk_flags,
-            classification_results=classification_results,
-            summary_by_categories=summary_by_categories,
-            output_folder=output_folder
-        )
-        
-        if word_doc_path:
-            print(f"Word document created: {word_doc_path}")
+        if high_risk_flags:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            for i, flag in enumerate(high_risk_flags, 1):
+                print(f"  {i}. {flag}")
         else:
-            print("Failed to create Word document")
+            print(f"\n--- HIGH RISK FLAGS ---")
+            print("  No high risk flags identified using per-flag analysis")
+
+# ==============================================================================
+# STEP 3: REPLACE the above section with this:
+# ==============================================================================
+
+        # Store original high risk flags
+        original_high_risk_flags = high_risk_flags.copy()
+        
+        # NEW: High Risk Deduplication Layer
+        if high_risk_flags and len(high_risk_flags) > 0:
+            print(f"\nOriginal High Risk Flags: {len(high_risk_flags)}")
+            print("Running High Risk Deduplication...")
             
-    except Exception as e:
-        logger.error(f"Error creating Word document: {e}")
-        word_doc_path = None
-    
-    # [Rest of the function remains the same...]
-    
-    print(f"\n=== PROCESSING COMPLETE WITH DEDUPLICATION FOR {pdf_name} ===")
-    print(f"Original High Risk: {original_risk_counts['High']}")
-    print(f"Final High Risk: {final_risk_counts['High']}")
-    print(f"Reduction: {original_risk_counts['High'] - final_risk_counts['High']} flags removed")
-    
-    return results_summary
+            high_risk_flags = deduplicate_high_risk_flags(
+                high_risk_flags=high_risk_flags,
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version,
+                deployment_name=deployment_name
+            )
+            
+            print(f"After Deduplication: {len(high_risk_flags)} high risk flags")
+            print(f"Reduction: {len(original_high_risk_flags) - len(high_risk_flags)} flags removed")
+
+        # Final risk counts (using deduplicated high_risk_flags)
+        risk_counts = {
+            'High': len(high_risk_flags),
+            'Low': len(low_risk_flags),
+            'Total': len(high_risk_flags) + len(low_risk_flags)
+        }
+        
+        print(f"\n=== FINAL CLASSIFICATION RESULTS ===")
+        print(f"Total LLM calls made: {len(bullet_points)} (one per flag)")
+        print(f"High Risk Flags: {risk_counts['High']}")
+        print(f"Low Risk Flags: {risk_counts['Low']}")
+        print(f"Total Flags: {risk_counts['Total']}")
+        
+        if high_risk_flags:
+            print(f"\n--- FINAL HIGH RISK FLAGS (DEDUPLICATED) ---")
+            for i, flag in enumerate(high_risk_flags, 1):
+                print(f"  {i}. {flag}")
+        else:
+            print(f"\n--- HIGH RISK FLAGS ---")
+            print("  No high risk flags identified")
+
+# ==============================================================================
+# STEP 4: In the Word document creation section, FIND this:
+# ==============================================================================
+
+            word_doc_path = create_word_document(
+                pdf_name=pdf_name,
+                company_info=company_info,
+                risk_counts=risk_counts,
+                classification_results=classification_results,  
+                summary_by_categories=summary_by_categories,
+                output_folder=output_folder
+            )
+
+# ==============================================================================
+# STEP 5: Update the classification_results to use deduplicated flags:
+# ==============================================================================
+
+            # Update classification_results to reflect deduplicated high risk flags
+            updated_classification_results = []
+            for result in classification_results:
+                if result['risk_level'].lower() == 'high':
+                    # Check if this flag is in the deduplicated list
+                    if result['flag'] in high_risk_flags:
+                        updated_classification_results.append(result)
+                else:
+                    # Keep all low risk flags
+                    updated_classification_results.append(result)
+            
+            word_doc_path = create_word_document(
+                pdf_name=pdf_name,
+                company_info=company_info,
+                risk_counts=risk_counts,  # This now contains deduplicated counts
+                classification_results=updated_classification_results,  # Updated results
+                summary_by_categories=summary_by_categories,
+                output_folder=output_folder
+            )
