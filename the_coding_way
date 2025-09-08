@@ -1,0 +1,163 @@
+High-Level Design Principles for GenAI Coding Practices
+
+1. Coding for Deployment
+
+Objective: Production-ready, robust, maintainable, scalable, and secure code intended for long-term use.
+•	Code Quality & Standards
+o	Follow consistent coding standards and style guides (e.g., PEP8 for Python).
+o	Ensure readability and maintainability with clear documentation and comments.
+o	Write modular and reusable code components.
+o	Use Pydantic models for input request format verification.
+•	Testing & Validation
+o	Implement comprehensive unit testing.
+o	Include performance and load testing where applicable.
+•	Performance & Scalability
+o	Optimize inference and training pipelines for efficiency.
+o	Design for horizontal and vertical scalability.
+o	Implement resource management (memory, compute).
+•	Security & Compliance
+o	Enforce security best practices (e.g., input validation, encryption). Use Vault for storing credentials.
+o	Ensure compliance with data privacy laws and organizational policies.
+o	Manage access controls and authentication mechanisms strictly.
+
+
+
+
+•	Deployment & Monitoring
+o	Use containerization (Docker) and orchestration tools (Kubernetes) for portability.
+o	Automate deployment pipelines (CI/CD).
+o	Implement logging, monitoring, and alerting for operational visibility.
+o	Design rollback and version control strategies.
+•	Error Handling & Resilience
+o	Incorporate robust error handling and failover mechanisms.
+o	Logging in Grafana.
+o	Manage edge cases and unexpected inputs.
+o	Build retry/logging for transient failures.
+
+2. Coding for Quick Proof of Concept (POC)
+ 
+Objective: Fast, flexible, and exploratory code to validate ideas or concepts quickly with minimal overhead.
+•	Development Speed
+o	Prioritize rapid development over code perfection or optimization.
+o	Use high-level libraries, frameworks, and pre-trained models to accelerate development.
+o	Skip extensive modularization if it hinders speed but maintain basic readability.
+•	Flexibility & Experimentation
+o	Allow easy modifications and experimentation (parameter tuning, feature toggling).
+o	Keep code simple and straightforward to quickly test hypotheses.
+•	Minimal Documentation
+o	Document essential parts only (assumptions, key steps).
+o	Use descriptive naming for ease of review without extensive comments.
+•	Testing
+o	Basic sanity checks against golden truth data instead of full-fledged testing.
+o	Ensure outputs are plausible but avoid deep validation at this stage.
+•	Resource Management
+o	Accept higher resource usage if it shortens development time.
+o	Optimize only if bottlenecks significantly hinder experimentation.
+
+
+•	Disposability
+o	Code can be thrown away or heavily refactored later.
+o	Focus on learning outcomes rather than long-term maintenance.
+
+3. Summary of design features -
+Aspect	Deployment	Quick POC
+Primary Goal	Stability, scalability, maintainability	Speed, experimentation,
+Code Quality	High, follows standards & style guides	Basic, focused on functionality
+Testing	Comprehensive & automated	Sanity checks only
+Documentation	Detailed and clear	Minimal and essential
+Performance	Optimized and scalable	Acceptable for speed
+Security	Strict adherence	Minimal focus
+Deployment	Automated CI/CD, containerized	Manual or ad-hoc
+Modularity	Highly modular and reusable	Simple, may be monolithic
+
+
+
+
+
+
+
+
+
+
+4. Code Structure Practices.
+Follow the attached structure while writing code.
+
+
+ 
+Code Practices
+Category	Do’s	Don’ts
+Code Style	Follow PEP8 for Python	Don’t write absurd imports & functions
+	Write re-usable and efficient code, follow KISS and DRY principles	Don’t write same code repeatedly, like API calls and initializations
+	Write Class-based / function-based code for re-usability	Don’t’ write general structureless code which needs to be used more than once
+		
+		
+Constants/Credentials	Specify in config.py	Don’t hardcode/declare in code and other files
+Comments and Docstrings	Add standard docstrings for every class / function	Don’t write class/function without usage
+Naming Conventions	Follow consistent naming for variables, functions and classes. Python – camel case	Don’t write variable names like abc, i, x even in loops.
+Data & Debug Logging	Loggers should be implemented everywhere	No prints statements should be used in deployment
+Data Model & Validation	Always have input & output validations - use Pydantic
+	Don’t write code without data validation
+Code Commits	Write meaningful commit messages	Don’t write vague commit messages
+Code Review	Every CR must be reviewed by at least one Peer	Don’t push code without raising CR and approval of peer review
+CR Checklist	•	Correctness
+•	Readability
+•	Logging
+•	Maintainability
+•	Security
+•	Error Handling
+•	Edge Cases
+•	Test Coverage
+•	C4 Diagram 
+•	README.md	Provide positive feedback
+Don’t blame
+Metrics	Accuracy:
+•	All AI related projects should have accuracy metrics (even in PoCs)
+•	Accuracy metrics should be reviewed with AI Leads and Business	Don’t create projects without accuracy metrics, progress isn’t measurable
+	System Latency:
+•	All AI related projects should have throughput and latency metrics	System latency metrics are crucial for optimization later, don’t miss
+Designs & Diagrams	For AI Leads Only:
+•	C4 diagrams after PoC signoff prior to development	Don’t encourage projects without flows and diagrams
+		
+
+
+Prompt Library – High level features
+•	Prompt Management
+o	Create, edit, delete, archive, and restore prompts
+o	Prompt versioning and change history
+o	Rich content editor (with metadata, formatting, code, examples)
+o	Organize with tags, categories, folders, and favorites
+•	Search & Discovery
+o	Advanced keyword, tag, metadata, and content search
+o	Trending, most used, and recently accessed prompts
+•	Prompt Templates & Parameterization
+o	Dynamic variables/placeholders with type validation
+o	Save and reuse parameter sets
+o	Prompt preview with live parameter population
+•	Collaboration & Sharing
+o	User roles and permissions (admin, editor, viewer)
+o	Internal and external sharing (links, public visibility)
+o	Prompt forking/duplication
+•	API & Integration
+o	REST API for full prompt lifecycle
+o	SDKs/client libraries for popular languages
+o	Import/export of prompt data (CSV, JSON, YAML)
+
+
+
+
+•	Analytics & Usage Tracking
+o	Usage statistics per prompt and aggregated metrics
+o	Feedback and improvement suggestions
+o	User activity logging and audit trail
+•	Prompt Testing & Evaluation
+o	Interactive testing playground with AI model integration
+o	Parameterized prompt testing and output comparison
+•	Security & Access Control
+o	Encrypted prompt data storage
+o	Audit logging and compliance options
+•	Documentation & Onboarding
+o	In-app guides, best practice documentation, and FAQs
+o	Inline help and onboarding checklists
+•	Advanced/Enterprise Features (Optional)
+o	Prompt quality scoring and A/B testing
+
