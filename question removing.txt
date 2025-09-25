@@ -1,0 +1,91 @@
+def process_pdf_enhanced_pipeline_with_per_flag_classification(pdf_path: str, previous_year_data: str, 
+                               output_folder: str = "results", 
+                               api_key: str = None, azure_endpoint: str = None, 
+                               api_version: str = None, deployment_name: str = "gpt-4.1"):
+    """
+    Enhanced processing pipeline with per flag classification in 5th iteration
+    """
+   
+    os.makedirs(output_folder, exist_ok=True)
+    pdf_name = Path(pdf_path).stem
+   
+    try:
+        # Initialize LLM and load PDF
+        llm_client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint, 
+            api_version=api_version,
+        )
+        
+        llm = AzureOpenAILLM(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint, 
+            api_version=api_version,
+            deployment_name=deployment_name
+        )
+
+        docs = mergeDocs(pdf_path, split_pages=False)
+        original_context = docs[0]["context"]
+        
+        # *** ADD THE LLM FILTERING HERE ***
+        print("Filtering questions from transcript using LLM...")
+        context = simple_llm_question_filter(original_context, llm)
+        
+        # Optional: Save both versions for comparison
+        with open(os.path.join(output_folder, f"{pdf_name}_original_context.txt"), 'w', encoding='utf-8') as f:
+            f.write(original_context)
+        with open(os.path.join(output_folder, f"{pdf_name}_filtered_context.txt"), 'w', encoding='utf-8') as f:
+            f.write(context)
+        
+        print(f"Original context length: {len(original_context)} characters")
+        print(f"Filtered context length: {len(context)} characters")
+        print(f"Reduction: {((len(original_context) - len(context)) / len(original_context) * 100):.1f}%")
+        # *** END OF NEW FILTERING CODE ***
+        
+        logger.info("Running 1st iteration in 4 bucket - Red Flag Identification")
+        # Make a chat completions call
+        response1 = llm_client.chat.completions.create(
+            model=deployment_name,
+            messages=[
+                {"role": "system", "content": system_prompt_step_1},
+                {"role": "user", "content": f"%%%%{context}%%%%"}  # Now uses filtered context
+            ]
+        )
+
+
+
+def simple_llm_question_filter(text: str, llm: AzureOpenAILLM) -> str:
+    """Simple LLM-based question filtering"""
+    
+    # Split into smaller chunks to avoid token limits
+    max_chars = 12000  # Adjust based on your model's context limit
+    chunks = [text[i:i+max_chars] for i in range(0, len(text), max_chars)]
+    
+    filtered_chunks = []
+    
+    for i, chunk in enumerate(chunks):
+        filter_prompt = f"""You are analyzing an earnings call transcript. Remove all analyst questions and keep only management responses and presentations.
+
+RULES:
+1. Remove entire paragraphs that are analyst questions
+2. Remove sections where analysts are speaking/asking questions
+3. Keep management responses, explanations, and prepared remarks
+4. Keep financial data and business updates from management
+5. Maintain the flow and context of management responses
+
+TEXT TO FILTER:
+{chunk}
+
+Return only the management responses and presentations:"""
+
+        try:
+            filtered_chunk = llm._call(filter_prompt, max_tokens=8000, temperature=0.1)
+            filtered_chunks.append(filtered_chunk)
+            print(f"  → Processed filtering chunk {i+1}/{len(chunks)}")
+            
+        except Exception as e:
+            logger.error(f"Error filtering chunk {i+1}: {e}")
+            filtered_chunks.append(chunk)  # Keep original if filtering fails
+    
+    return '\n\n'.join(filtered_chunks)
+        # ... rest of your existing code remains the same ...
