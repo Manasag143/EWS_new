@@ -111,3 +111,22 @@ Criteria 2: High risk if
 60% or more of the capex is funded by debt. Additionally, flag if phrases are present that suggest the absence of equity funding, such as:
 •	"We will rely solely on debt financing"
 •	"Majority or significant of the capex will be debt funded"
+
+
+
+
+
+capex_announcement
+
+High: New capex is announced and capex amount > 30% networth as per previous reported balance sheet number for the company or any business line of the company
+Low: New capex is announced but capex amount ≤ 30% networth as per previous reported balance sheet number
+
+capex_debt_funding
+
+High: 60% or more of the capex is funded by debt for the company or any business line of the company. Additionally, flag if phrases are present that suggest the absence of equity funding, such as:
+
+"We will rely solely on debt financing"
+"Majority or significant of the capex will be debt funded"
+
+
+Low: Less than 60% of the capex is funded by debt
