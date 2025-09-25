@@ -1,0 +1,113 @@
+criteria = """
+debt_increase: 
+    High: Debt is increased for the company or any business line of the company more than 30% compared to previous reported balance sheet number; 
+    Low: Debt increased less than 30% compared to previous reported balance sheet number
+
+debt_ebitda: 
+    High: Debt/EBITDA > 3x i.e. Debt to EBITDA ratio is above (greater than) three times for the company or any business line of the company; 
+    Low: Debt/EBITDA < 3x i.e. Debt to EBITDA ratio is less than three times
+
+short_term_borrowings: 
+    High: Short-term borrowings or current liabilities increase by more than 30% compared to previous reported balance sheet number for the company or any business line of the company; 
+    Low: Short-term borrowings or current liabilities increase is less than 30% compared to previous reported balance sheet number
+
+debt_servicing: 
+    High: Calculate the ratio of debt servicing to net cash accrual and provide a high-risk flag if the calculated ratio is greater than 1.5; 
+    Low: Debt servicing to net cash accrual ratio is 1.5 or less
+
+revenue_decline: 
+    High: Revenue falls for the company or any business line of the company by more than 25% compared to previous reported quarter number; 
+    Low: Revenue falls by less than 25% compared to previous reported quarter number
+
+profit_before_tax_decline: 
+    High: Profitability or profit before tax (PBT) falls by more than 25% compared to previous reported quarter number for the company or any business line of the company; 
+    Low: Profitability or profit before tax (PBT) falls by less than 25% compared to previous reported quarter number
+
+profit_after_tax_decline: 
+    High: Profit after tax (PAT) falls by more than 25% compared to previous reported quarter number for the company or any business line of the company; 
+    Low: Profit after tax (PAT) falls by less than 25% compared to previous reported quarter number
+
+EBIDTA_decline: 
+    High: EBITDA falls by more than 25% compared to previous reported quarter number for the company or any business line of the company; 
+    Low: EBITDA falls by less than 25% compared to previous reported quarter number
+
+margin_decline: 
+    High: Operating margin falling more than 25% compared to previous reported quarter number for the company or any business line of the company; 
+    Low: Operating margin falling less than 25% compared to previous reported quarter number
+
+gross_margin: 
+    High: Gross margin falling more than 100 bps (basis points) i.e. if the gross margin is falling by more than 1% for the company or any business line of the company; 
+    Low: Gross margin falling by less than 100 bps (basis points) i.e.1%
+
+cash_and_cash_equivalents_balance: 
+    High: Cash and cash equivalents balance for the company or any business line of the company falling more than 25% compared to previous reported balance sheet number; 
+    Low: Cash and cash equivalents balance falling less than 25% compared to previous reported balance sheet number
+
+receivable_days: 
+    High: Receivable days OR debtor days for the company or any business line of the company are increased more than 30% compared to previous reported balance sheet number; 
+    Low: Receivable days or debtor's days are increased but less than 30% compared to previous reported balance sheet number
+
+payable_days: 
+    High: Payable days or creditors days for the company or any business line of the company increase by more than 30% compared to previous reported balance sheet number; 
+    Low: Payable days or creditors days increase is less than 30% compared to previous reported balance sheet number
+
+receivables: 
+    High: Receivables or debtors for the company or any business line of the company are increased more than 30% compared to previous reported balance sheet number; 
+    Low: Receivables or debtors are increase is less than 30% compared to previous reported balance sheet number
+
+payables: 
+    High: Payables or creditors for the company or any business line of the company increase by more than 30% compared to previous reported balance sheet number; 
+    Low: Payables or creditors is less than 30% compared to previous reported balance sheet number
+
+asset_decline: 
+    High: Asset value for the company or any business line of the company falls by more than 30% compared to the previous reported balance sheet number; 
+    Low: Asset value falls by less than 30% compared to previous reported balance sheet number
+
+impairment: 
+    High: Impairment or devaluation more than 25% of previous reported net worth from balance sheet for the company or any business line of the company; 
+    Low: Impairment or devaluation less than 25% of previous reported net worth from balance sheet
+
+one_time_expenses: 
+    High: One-time expenses or losses more than 25% of current quarter's EBITDA for the company or any business line of the company; 
+    Low: One-time expenses or losses less than 25% of current quarter's EBITDA
+
+provisioning: 
+    High: Provisioning or write-offs more than 25% of current quarter's EBITDA for the company or any business line of the company; 
+    Low: Provisioning or write-offs less than 25% of current quarter's EBITDA
+
+management_issues: 
+    High: If found any management or strategy related issues or concerns in a question or a conclusion of any discussion. This can include any delays, failures, dysfunction, instability etc. due to management / strategy / governance.
+    Low: If found no issues related to management or strategy or no concerns or a conclusion of any discussion related to management and strategy
+
+regulatory_compliance: 
+    High: If found any regulatory issues as a concern or a conclusion of any discussion. This includes warnings from regulators, delays in obtaining permits, approvals, licenses, or clearances, and any regulatory challenges affecting operations, transactions, or strategic initiatives.
+    Low: If there is no clear concern for the company basis the discussion on the regulatory issues
+
+market_competition: 
+    High: Identify any signs of competitive intensity, new entrants, pricing pressure (including dumping or price changes), or decline in market share. Also include indirect competitive risks such as supply-side constraints, delays, or resource shortages that impact market performance. Additionally, capture macroeconomic factors—such as adverse currency movements, inflation, or trade barriers—that materially affect the company's competitive position or pricing power.
+    Low: Low competitive intensity or no new entrants, or no decline in market share
+
+operational_disruptions: 
+    High: Identify any operational challenges or supply chain issues mentioned as a concern or conclusion. This includes disruptions due to labor shortages, productivity losses, client-side delays, weather-related impacts, or any other factors that materially affect execution, delivery timelines.
+    Low: If there is no clear concern for the company basis the discussion on the operational or supply chain issues
+
+others_financial_stress: 
+    High: Identify any mention of severe financial deterioration using strong adjectives. This includes phrases such as "significant decline" in key metrics (revenue, EBITDA, PAT/PBT, margins), "high erosion of net worth," "massive losses," or similar expressions that imply material financial stress. Include such mentions even if the exact quantum is not provided.
+    Low: No mentions of significant decline, erosion, massive losses, huge decline, net loss, or adverse adjectives
+
+others_quantitative: 
+    High: If there are any other material issues with quantified impact more than 25% of current quarter EBITDA; 
+    Low: If there are no other material issues with quantified impact more than 25% of current quarter EBITDA
+"""
+
+
+
+
+
+Criteria 1: High risk if 
+New capex is announced and capex amount > 30% networth as per previous reported balance sheet number
+ 
+Criteria 2: High risk if
+60% or more of the capex is funded by debt. Additionally, flag if phrases are present that suggest the absence of equity funding, such as:
+•	"We will rely solely on debt financing"
+•	"Majority or significant of the capex will be debt funded"
